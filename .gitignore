@@ -1,0 +1,5 @@
+# Ignore all Excel files
+*.xlsx
+
+# Ignore Python bytecode cache
+__pycache__/
