@@ -101,6 +101,36 @@ class ExelReaderTest(unittest.TestCase):
         self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-29")
         self.assertEqual(float(out.iloc[0]["quantity"]), 3000.0)
 
+    def test_extract_inbound_events_excludes_high_price_and_korean_supplier(self):
+        df = pd.DataFrame(
+            {
+                "__product__": ["AMBN", "AMBN", "AMBN"],
+                "__in_date__": [
+                    pd.Timestamp("2025-07-10"),
+                    pd.Timestamp("2025-07-11"),
+                    pd.Timestamp("2025-07-12"),
+                ],
+                "__in_qty__": [1000.0, 2000.0, 3000.0],
+                "__unit_price__": [10.85, 500.0, 11.1],
+                "__exchange_rate__": [1370.0, 1380.0, 1390.0],
+                "__supplier__": ["Puyang Willing", "Global Corp", "한국상사"],
+                "__customer__": ["", "", ""],
+                "__note__": ["", "", ""],
+            }
+        )
+
+        out = extract_inbound_events(
+            file_path=Path("dummy.xlsx"),
+            year=2025,
+            product="AMBN",
+            cutoff=pd.Timestamp("2025-08-31"),
+            df=df,
+        )
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-10")
+        self.assertEqual(float(out.iloc[0]["unit_price"]), 10.85)
+
     def test_fifo_adjustment_seed_uses_real_inbound_date_not_boundary(self):
         product = "CZ(P)"
         start = pd.Timestamp("2025-07-23")

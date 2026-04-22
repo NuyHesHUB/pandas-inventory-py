@@ -46,6 +46,12 @@ def _is_return_text(s: object) -> bool:
     return ("반품" in txt) or ("return" in txt)
 
 
+def _contains_korean_text(s: object) -> bool:
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return False
+    return bool(re.search(r"[가-힣ㄱ-ㅎㅏ-ㅣ]", str(s)))
+
+
 # ======================
 # 컬럼 선택기
 # ======================
@@ -454,6 +460,8 @@ def extract_inbound_events(
         | out["customer"].map(_is_return_text)
         | out["note"].map(_is_return_text)
     )
+    out["is_high_krw_unit_price"] = pd.to_numeric(out["unit_price"], errors="coerce") >= 500.0
+    out["is_korean_supplier"] = out["supplier"].map(_contains_korean_text)
 
     out = out[
         (out["product"] == product)
@@ -461,6 +469,8 @@ def extract_inbound_events(
         & (out["event_date"].notna())
         & (out["event_date"] <= cutoff)
         & (~out["is_return"])
+        & (~out["is_high_krw_unit_price"])
+        & (~out["is_korean_supplier"])
     ].copy()
 
     return out.sort_values(["event_date"]).reset_index(drop=True)
