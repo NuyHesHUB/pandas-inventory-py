@@ -14,6 +14,7 @@ _KOREAN_MD_RE = re.compile(r"^\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 _YMD_RE = re.compile(r"^\s*((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})")
 _MD_RE = re.compile(r"^\s*(\d{1,2})[-/.](\d{1,2})\s*$")
 _EMPTY_DATE_TEXT = {"", "nan", "nat", "none", "<na>"}
+_KRW_FORMAT_TOKENS = ("₩", "￦", "krw", "원")
 
 
 # ======================
@@ -145,6 +146,27 @@ def _col_series(df: pd.DataFrame, col) -> pd.Series:
     """중복/비정렬 MultiIndex 컬럼에서도 단일 컬럼을 Series로 꺼낸다."""
     selected = df.loc[:, [col]]
     return selected.iloc[:, 0]
+
+
+def _is_krw_number_format(fmt: object) -> bool:
+    """엑셀 셀 표시 형식이 원화 회계/통화 형식인지 판별한다."""
+    if fmt is None:
+        return False
+    txt = str(fmt).strip().lower()
+    if not txt or txt == "general":
+        return False
+    return any(token in txt for token in _KRW_FORMAT_TOKENS)
+
+
+def _any_krw_format_by_row(format_df: pd.DataFrame | None, cols: list | tuple) -> pd.Series:
+    if format_df is None or not cols:
+        index = format_df.index if format_df is not None else None
+        return pd.Series(False, index=index)
+    column_set = set(format_df.columns.to_list())
+    existing_cols = [col for col in cols if col in column_set]
+    if not existing_cols:
+        return pd.Series(False, index=format_df.index)
+    return format_df.loc[:, existing_cols].map(_is_krw_number_format).any(axis=1)
 
 
 def _pick_sales_qty_cols(df: pd.DataFrame):
@@ -324,17 +346,23 @@ def _inventory_usecols(file_path_str: str, sheet_name: str) -> tuple[int, ...]:
 def _read_inventory_sheet_from_ws(ws, usecols: tuple[int, ...]) -> pd.DataFrame:
     """열려 있는 워크시트에서 재고대장 데이터를 읽어 기존 MultiIndex 컬럼 형태로 만든다."""
     width = max(usecols) + 1 if usecols else ws.max_column
-    rows = list(ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=width, values_only=True))
-    if len(rows) <= 2:
+    cell_rows = list(ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=width, values_only=False))
+    if len(cell_rows) <= 2:
         return pd.DataFrame()
 
     # 엑셀 병합 셀 때문에 상위 헤더는 오른쪽으로 이어지는 빈칸을 채워야 한다.
-    raw = pd.DataFrame(rows)
+    raw = pd.DataFrame([[cell.value for cell in row] for row in cell_rows])
     top_header = raw.iloc[0].ffill().fillna("")
     sub_header = raw.iloc[1].fillna("")
     out = raw.iloc[2:].copy()
     out.columns = pd.MultiIndex.from_arrays([top_header, sub_header])
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+
+    # 원화 회계 표시 형식은 셀 값만 읽으면 달러 단가와 구분되지 않으므로 서식을 보존한다.
+    number_formats = pd.DataFrame([[cell.number_format for cell in row] for row in cell_rows[2:]])
+    number_formats.columns = out.columns
+    out.attrs["number_formats"] = number_formats.reset_index(drop=True)
+    return out
 
 
 def _read_inventory_sheet(file_path: Path, sheet_name: str, usecols: tuple[int, ...] | None = None) -> pd.DataFrame:
@@ -373,7 +401,14 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
             parts.append(raw_part)
     finally:
         wb.close()
-    raw = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    if len(parts) > 1:
+        format_parts = [p.attrs.get("number_formats") for p in parts if p.attrs.get("number_formats") is not None]
+        raw = pd.concat(parts, ignore_index=True)
+        if len(format_parts) == len(parts):
+            raw.attrs["number_formats"] = pd.concat(format_parts, ignore_index=True)
+    else:
+        raw = parts[0]
+    format_df = raw.attrs.get("number_formats")
 
     date_col = _pick_date_col(raw, INVENTORY_COLUMN_MAP["date"])
     prod_col = _pick_product_col(raw, INVENTORY_COLUMN_MAP["product_name"])
@@ -412,6 +447,10 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     rate_cols = _pick_inbound_exchange_rate_cols(raw)
     out["__unit_price__"] = _first_valid_by_row(raw[price_cols]) if price_cols else pd.NA
     out["__exchange_rate__"] = _first_valid_by_row(raw[rate_cols]) if rate_cols else pd.NA
+    krw_format_cols = list(price_cols)
+    if supplier_col is not None:
+        krw_format_cols.append(supplier_col)
+    out["__is_krw_accounting_format__"] = _any_krw_format_by_row(format_df, krw_format_cols).reindex(out.index, fill_value=False)
 
     # 입고 제외 조건은 모든 품목에 공통이므로 로딩 시 1회만 계산한다.
     # 기존에는 품목별 FIFO마다 전체 행을 다시 문자열 정규화해서 시간이 크게 늘었다.
@@ -420,7 +459,10 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
         | out["__customer__"].map(_is_return_text)
         | out["__note__"].map(_is_return_text)
     )
-    out["__is_high_krw_unit_price__"] = pd.to_numeric(out["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
+    out["__is_high_krw_unit_price__"] = (
+        pd.to_numeric(out["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
+        | out["__is_krw_accounting_format__"]
+    )
     out["__is_korean_supplier__"] = out["__supplier__"].map(_contains_korean_text)
 
     out["__event_date__"] = pd.to_datetime(out["__event_date__"], errors="coerce")

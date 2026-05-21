@@ -6,6 +6,7 @@ import pandas as pd
 
 from sw_exel_py_project.exel_reader import (
     _extract_year_from_sheet_name,
+    _is_krw_number_format,
     _load_inbound_events_progressive,
     _pick_optional_col,
     _years_to_scan_desc,
@@ -130,6 +131,39 @@ class ExelReaderTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-10")
         self.assertEqual(float(out.iloc[0]["unit_price"]), 10.85)
+
+    def test_krw_number_format_detection(self):
+        self.assertTrue(_is_krw_number_format('_-[$₩-412]* #,##0_-'))
+        self.assertTrue(_is_krw_number_format('"원"#,##0'))
+        self.assertFalse(_is_krw_number_format('$#,##0.00'))
+        self.assertFalse(_is_krw_number_format('General'))
+
+    def test_extract_inbound_events_excludes_krw_accounting_format(self):
+        df = pd.DataFrame(
+            {
+                "__product__": ["AMBN", "AMBN"],
+                "__in_date__": [pd.Timestamp("2025-07-10"), pd.Timestamp("2025-07-11")],
+                "__in_qty__": [1000.0, 2000.0],
+                "__unit_price__": [10.85, 11.1],
+                "__exchange_rate__": [1370.0, 1380.0],
+                "__supplier__": ["Puyang Willing", "Global Corp"],
+                "__customer__": ["", ""],
+                "__note__": ["", ""],
+                "__is_krw_accounting_format__": [False, True],
+                "__is_high_krw_unit_price__": [False, True],
+            }
+        )
+
+        out = extract_inbound_events(
+            file_path=Path("dummy.xlsx"),
+            year=2025,
+            product="AMBN",
+            cutoff=pd.Timestamp("2025-08-31"),
+            df=df,
+        )
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-10")
 
     def test_fifo_adjustment_seed_uses_real_inbound_date_not_boundary(self):
         product = "CZ(P)"

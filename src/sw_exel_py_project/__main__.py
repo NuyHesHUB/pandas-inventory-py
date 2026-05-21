@@ -86,9 +86,15 @@ def main():
             print("매핑 실패 품목:", ", ".join(summary["unresolved_items"]))
         if summary.get("fallback_items"):
             print("단가 lot 미탐지(기존값 사용) 품목:", ", ".join(summary["fallback_items"]))
+        if summary.get("excluded_price_items"):
+            print("원화/국내 단가 제외 품목:", ", ".join(summary["excluded_price_items"]))
+        if summary.get("anchored_items"):
+            print("기존 템플릿 lot 유지 품목:", ", ".join(summary["anchored_items"]))
         if summary.get("overflow_items"):
-            print("lot 행수 초과(마지막 행 합산) 품목:", ", ".join(summary["overflow_items"]))
-        if summary.get("changed_cells", 0) == 0:
+            print("lot 행수 초과(템플릿 행 자동 추가) 품목:", ", ".join(summary["overflow_items"]))
+        if summary.get("changed_cells", 0) == 0 and summary.get("anchored_items"):
+            print("안내: 선택 기간과 템플릿 기간이 같아 기존 템플릿 lot을 보존했습니다.")
+        elif summary.get("changed_cells", 0) == 0:
             print("경고: 갱신된 셀이 없습니다. 매핑 실패 또는 기간/데이터 조건을 확인하세요.")
         return
 
@@ -136,9 +142,15 @@ def main():
                 print("매핑 실패 품목:", ", ".join(summary["unresolved_items"]))
             if summary.get("fallback_items"):
                 print("단가 lot 미탐지(기존값 사용) 품목:", ", ".join(summary["fallback_items"]))
+            if summary.get("excluded_price_items"):
+                print("원화/국내 단가 제외 품목:", ", ".join(summary["excluded_price_items"]))
+            if summary.get("anchored_items"):
+                print("기존 템플릿 lot 유지 품목:", ", ".join(summary["anchored_items"]))
             if summary.get("overflow_items"):
-                print("lot 행수 초과(마지막 행 합산) 품목:", ", ".join(summary["overflow_items"]))
-            if summary.get("changed_cells", 0) == 0:
+                print("lot 행수 초과(템플릿 행 자동 추가) 품목:", ", ".join(summary["overflow_items"]))
+            if summary.get("changed_cells", 0) == 0 and summary.get("anchored_items"):
+                print("안내: 선택 기간과 템플릿 기간이 같아 기존 템플릿 lot을 보존했습니다.")
+            elif summary.get("changed_cells", 0) == 0:
                 print("경고: 갱신된 셀이 없습니다. 매핑 실패 또는 기간/데이터 조건을 확인하세요.")
             return
 
