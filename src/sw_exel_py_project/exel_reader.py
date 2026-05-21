@@ -2,11 +2,18 @@ import re
 from pathlib import Path
 from functools import lru_cache
 import unicodedata
+from datetime import date, datetime
 
 import openpyxl
 import pandas as pd
 
 from .config.exel_column_map import INVENTORY_COLUMN_MAP
+
+
+_KOREAN_MD_RE = re.compile(r"^\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_YMD_RE = re.compile(r"^\s*((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})")
+_MD_RE = re.compile(r"^\s*(\d{1,2})[-/.](\d{1,2})\s*$")
+_EMPTY_DATE_TEXT = {"", "nan", "nat", "none", "<na>"}
 
 
 # ======================
@@ -21,19 +28,47 @@ def _canon(s: object) -> str:
     return re.sub(r"\s+|\(|\)|\[|\]|{|}|/|\\|-|_", "", s).lower()
 
 
-def _parse_korean_md(s: str, year: int):
-    """'MM월 DD일' → Timestamp 변환"""
-    if pd.isna(s):
+def _parse_korean_md(s: object, year: int):
+    """엑셀 셀 날짜를 Timestamp로 표준화한다.
+
+    재고대장 날짜는 대부분 '7월 24일' 또는 '2025-07-24'처럼 단순한
+    형태라서 pandas의 일반 날짜 추론을 매 셀마다 호출하면 매우 느리다.
+    흔한 형식은 정규식으로 직접 처리하고, 예외 형식만 pandas에 맡긴다.
+    """
+    if s is None:
         return pd.NaT
     if isinstance(s, pd.Timestamp):
         return s.normalize()
+    if isinstance(s, (datetime, date)):
+        return pd.Timestamp(s).normalize()
+    if isinstance(s, float) and pd.isna(s):
+        return pd.NaT
+
     txt = str(s).strip()
-    m = re.match(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", txt)
+    if txt.lower() in _EMPTY_DATE_TEXT:
+        return pd.NaT
+
+    m = _KOREAN_MD_RE.match(txt)
     if m:
         try:
             return pd.Timestamp(year=year, month=int(m[1]), day=int(m[2]))
         except Exception:
             return pd.NaT
+
+    m = _YMD_RE.match(txt)
+    if m:
+        try:
+            return pd.Timestamp(year=int(m[1]), month=int(m[2]), day=int(m[3]))
+        except Exception:
+            return pd.NaT
+
+    m = _MD_RE.match(txt)
+    if m:
+        try:
+            return pd.Timestamp(year=year, month=int(m[1]), day=int(m[2]))
+        except Exception:
+            return pd.NaT
+
     return pd.to_datetime(txt, errors="coerce")
 
 
@@ -104,6 +139,12 @@ def _pick_optional_col(df, col_lv0: str | None):
         elif _norm(c) == target:
             return c
     return None
+
+
+def _col_series(df: pd.DataFrame, col) -> pd.Series:
+    """중복/비정렬 MultiIndex 컬럼에서도 단일 컬럼을 Series로 꺼낸다."""
+    selected = df.loc[:, [col]]
+    return selected.iloc[:, 0]
 
 
 def _pick_sales_qty_cols(df: pd.DataFrame):
@@ -184,24 +225,25 @@ def _pick_inbound_exchange_rate_cols(df: pd.DataFrame):
 
 def _make_event_date_series(df: pd.DataFrame, primary_col, arrival_col, year: int) -> pd.Series:
     """판매/출고 기준일: '날 짜' 우선, 없으면 도착일 폴백"""
-    s1 = df[primary_col].apply(lambda x: _parse_korean_md(x, year))
+    s1 = _col_series(df, primary_col).apply(lambda x: _parse_korean_md(x, year))
     if arrival_col is None:
         return s1
-    s2 = df[arrival_col].apply(lambda x: _parse_korean_md(x, year))
+    s2 = _col_series(df, arrival_col).apply(lambda x: _parse_korean_md(x, year))
     return s1.where(~s1.isna(), s2)
 
 
 def _make_inbound_date_series(df: pd.DataFrame, date_col, arrival_col, year: int) -> pd.Series:
     """입고 기준일: 도착일 우선, 없으면 '날 짜' 사용"""
-    s1 = df[date_col].apply(lambda x: _parse_korean_md(x, year))
+    s1 = _col_series(df, date_col).apply(lambda x: _parse_korean_md(x, year))
     if arrival_col is None:
         return s1
-    s2 = df[arrival_col].apply(lambda x: _parse_korean_md(x, year))
+    s2 = _col_series(df, arrival_col).apply(lambda x: _parse_korean_md(x, year))
     return s2.where(~s2.isna(), s1)
 
 
 def _to_num_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    return frame.replace(r"[^\d\.\-]", "", regex=True).apply(pd.to_numeric, errors="coerce")
+    cleaned = frame.astype("string").replace(r"[^\d\.\-]", "", regex=True)
+    return cleaned.apply(pd.to_numeric, errors="coerce")
 
 
 def _first_valid_by_row(frame: pd.DataFrame) -> pd.Series:
@@ -248,11 +290,70 @@ def _years_to_scan_desc(file_path_str: str, target_year: int) -> tuple[int, ...]
     return tuple(years)
 
 
+def _inventory_usecols_from_ws(ws) -> tuple[int, ...]:
+    """재고대장 워크시트에서 pandas가 읽을 앞쪽 컬럼 범위를 계산한다.
+
+    일부 엑셀 파일은 서식 흔적 때문에 max_column이 16,000개 이상으로 잡힌다.
+    실제 필요한 컬럼은 날짜/품명/입고/매출/재고/비고 영역이므로, 초반 행에서
+    값이 있는 마지막 컬럼을 찾고 넉넉한 폭만 읽어 빈 컬럼 처리 비용을 줄인다.
+    """
+    max_col = 0
+    sheet_max_col = ws.max_column
+
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 50), values_only=True):
+        for idx, value in enumerate(row, start=1):
+            if value is not None and str(value).strip() != "":
+                max_col = max(max_col, idx)
+
+    # 초반 행에서 실제 값이 확인되는 범위만 읽되, 비정상적으로 큰 서식 영역은 자른다.
+    # pandas usecols의 정수는 0-based 위치다.
+    width = min(max(max_col, 1), 128, sheet_max_col)
+    return tuple(range(width))
+
+
+@lru_cache(maxsize=32)
+def _inventory_usecols(file_path_str: str, sheet_name: str) -> tuple[int, ...]:
+    file_path = Path(file_path_str)
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        return _inventory_usecols_from_ws(wb[sheet_name])
+    finally:
+        wb.close()
+
+
+def _read_inventory_sheet_from_ws(ws, usecols: tuple[int, ...]) -> pd.DataFrame:
+    """열려 있는 워크시트에서 재고대장 데이터를 읽어 기존 MultiIndex 컬럼 형태로 만든다."""
+    width = max(usecols) + 1 if usecols else ws.max_column
+    rows = list(ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=width, values_only=True))
+    if len(rows) <= 2:
+        return pd.DataFrame()
+
+    # 엑셀 병합 셀 때문에 상위 헤더는 오른쪽으로 이어지는 빈칸을 채워야 한다.
+    raw = pd.DataFrame(rows)
+    top_header = raw.iloc[0].ffill().fillna("")
+    sub_header = raw.iloc[1].fillna("")
+    out = raw.iloc[2:].copy()
+    out.columns = pd.MultiIndex.from_arrays([top_header, sub_header])
+    return out.reset_index(drop=True)
+
+
+def _read_inventory_sheet(file_path: Path, sheet_name: str, usecols: tuple[int, ...] | None = None) -> pd.DataFrame:
+    """재고대장 한 시트를 읽고 기존 header=[2, 3] 형태와 같은 컬럼을 만든다."""
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        if usecols is None:
+            usecols = _inventory_usecols_from_ws(ws)
+        return _read_inventory_sheet_from_ws(ws, usecols)
+    finally:
+        wb.close()
+
+
 # ======================
 # 준비/캐시: 엑셀 1회 로딩 + 파생 컬럼 사전계산
 # ======================
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=16)
 def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     """
     파일/연도 단위로 엑셀을 1회만 읽고, 필요한 파생 컬럼을 생성해 반환.
@@ -260,20 +361,18 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     file_path = Path(file_path_str)
     wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     sheets = [s for s in wb.sheetnames if str(year) in s]
-    wb.close()
+    usecols_by_sheet = {s: _inventory_usecols_from_ws(wb[s]) for s in sheets}
     if not sheets:
+        wb.close()
         return pd.DataFrame()
 
     parts = []
-    for sn in sheets:
-        raw_part = pd.read_excel(
-            file_path,
-            sheet_name=sn,
-            engine="openpyxl",
-            header=[2, 3],
-            dtype=str,
-        )
-        parts.append(raw_part)
+    try:
+        for sn in sheets:
+            raw_part = _read_inventory_sheet_from_ws(wb[sn], usecols_by_sheet.get(sn))
+            parts.append(raw_part)
+    finally:
+        wb.close()
     raw = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
 
     date_col = _pick_date_col(raw, INVENTORY_COLUMN_MAP["date"])
@@ -285,14 +384,14 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     note_col = _pick_optional_col(raw, INVENTORY_COLUMN_MAP.get("note"))
 
     out = pd.DataFrame(index=raw.index)
-    out["__product__"] = _clean_text_series(raw[prod_col])
+    out["__product__"] = _clean_text_series(_col_series(raw, prod_col))
     out["__event_date__"] = _make_event_date_series(raw, date_col, arrival_col, year)
     out["__in_date__"] = _make_inbound_date_series(raw, date_col, arrival_col, year)
-    out["__row_date__"] = raw[date_col].apply(lambda x: _parse_korean_md(x, year))
-    out["__stock__"] = pd.to_numeric(raw[stock_col], errors="coerce")
-    out["__supplier__"] = _clean_text_series(raw[supplier_col]) if supplier_col is not None else ""
-    out["__customer__"] = _clean_text_series(raw[customer_col]) if customer_col is not None else ""
-    out["__note__"] = _clean_text_series(raw[note_col]) if note_col is not None else ""
+    out["__row_date__"] = _col_series(raw, date_col).apply(lambda x: _parse_korean_md(x, year))
+    out["__stock__"] = pd.to_numeric(_col_series(raw, stock_col), errors="coerce")
+    out["__supplier__"] = _clean_text_series(_col_series(raw, supplier_col)) if supplier_col is not None else ""
+    out["__customer__"] = _clean_text_series(_col_series(raw, customer_col)) if customer_col is not None else ""
+    out["__note__"] = _clean_text_series(_col_series(raw, note_col)) if note_col is not None else ""
 
     # 판매 수량
     try:
@@ -314,6 +413,16 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     out["__unit_price__"] = _first_valid_by_row(raw[price_cols]) if price_cols else pd.NA
     out["__exchange_rate__"] = _first_valid_by_row(raw[rate_cols]) if rate_cols else pd.NA
 
+    # 입고 제외 조건은 모든 품목에 공통이므로 로딩 시 1회만 계산한다.
+    # 기존에는 품목별 FIFO마다 전체 행을 다시 문자열 정규화해서 시간이 크게 늘었다.
+    out["__is_return__"] = (
+        out["__supplier__"].map(_is_return_text)
+        | out["__customer__"].map(_is_return_text)
+        | out["__note__"].map(_is_return_text)
+    )
+    out["__is_high_krw_unit_price__"] = pd.to_numeric(out["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
+    out["__is_korean_supplier__"] = out["__supplier__"].map(_contains_korean_text)
+
     out["__event_date__"] = pd.to_datetime(out["__event_date__"], errors="coerce")
     out["__in_date__"] = pd.to_datetime(out["__in_date__"], errors="coerce")
     out["__row_date__"] = pd.to_datetime(out["__row_date__"], errors="coerce")
@@ -322,7 +431,7 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     return out
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)
 def load_inventory_history_df(file_path_str: str, year: int) -> pd.DataFrame:
     """
     대상 연도 이하(예: 2025 -> 2025, 2024, 2023...) 시트를 모두 로딩해 결합.
@@ -441,37 +550,53 @@ def extract_inbound_events(
         if df.empty:
             return pd.DataFrame()
 
+    # 일반 실행 경로에서는 load_inventory_df가 제외 플래그를 미리 계산한다.
+    # 단위 테스트처럼 직접 만든 df가 들어오면 여기서만 보수적으로 보강한다.
     supplier_s = df["__supplier__"] if "__supplier__" in df.columns else pd.Series("", index=df.index)
     customer_s = df["__customer__"] if "__customer__" in df.columns else pd.Series("", index=df.index)
     note_s = df["__note__"] if "__note__" in df.columns else pd.Series("", index=df.index)
 
-    out = pd.DataFrame({
-        "product": df["__product__"],
-        "event_date": pd.to_datetime(df["__in_date__"], errors="coerce"),
-        "quantity": pd.to_numeric(df["__in_qty__"], errors="coerce").fillna(0.0),
-        "unit_price": pd.to_numeric(df["__unit_price__"], errors="coerce"),
-        "exchange_rate": pd.to_numeric(df["__exchange_rate__"], errors="coerce"),
-        "supplier": supplier_s,
-        "customer": customer_s,
-        "note": note_s,
-    })
-    out["is_return"] = (
-        out["supplier"].map(_is_return_text)
-        | out["customer"].map(_is_return_text)
-        | out["note"].map(_is_return_text)
+    is_return = (
+        df["__is_return__"]
+        if "__is_return__" in df.columns
+        else (supplier_s.map(_is_return_text) | customer_s.map(_is_return_text) | note_s.map(_is_return_text))
     )
-    out["is_high_krw_unit_price"] = pd.to_numeric(out["unit_price"], errors="coerce") >= 500.0
-    out["is_korean_supplier"] = out["supplier"].map(_contains_korean_text)
+    is_high_krw_unit_price = (
+        df["__is_high_krw_unit_price__"]
+        if "__is_high_krw_unit_price__" in df.columns
+        else pd.to_numeric(df["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
+    )
+    is_korean_supplier = (
+        df["__is_korean_supplier__"]
+        if "__is_korean_supplier__" in df.columns
+        else supplier_s.map(_contains_korean_text)
+    )
 
-    out = out[
-        (out["product"] == product)
-        & (out["quantity"] > 0)
-        & (out["event_date"].notna())
-        & (out["event_date"] <= cutoff)
-        & (~out["is_return"])
-        & (~out["is_high_krw_unit_price"])
-        & (~out["is_korean_supplier"])
-    ].copy()
+    event_date = df["__in_date__"]
+    quantity = pd.to_numeric(df["__in_qty__"], errors="coerce").fillna(0.0)
+    mask = (
+        (df["__product__"] == product)
+        & (quantity > 0)
+        & (event_date.notna())
+        & (event_date <= cutoff)
+        & (~is_return)
+        & (~is_high_krw_unit_price)
+        & (~is_korean_supplier)
+    )
+    if not mask.any():
+        return pd.DataFrame(columns=["product", "event_date", "quantity", "unit_price", "exchange_rate", "supplier", "customer", "note"])
+
+    sub = df.loc[mask]
+    out = pd.DataFrame({
+        "product": sub["__product__"],
+        "event_date": sub["__in_date__"],
+        "quantity": quantity.loc[mask],
+        "unit_price": pd.to_numeric(sub["__unit_price__"], errors="coerce"),
+        "exchange_rate": pd.to_numeric(sub["__exchange_rate__"], errors="coerce"),
+        "supplier": supplier_s.loc[mask],
+        "customer": customer_s.loc[mask],
+        "note": note_s.loc[mask],
+    })
 
     return out.sort_values(["event_date"]).reset_index(drop=True)
 
@@ -502,19 +627,24 @@ def extract_sales_events(
         if df.empty:
             return pd.DataFrame()
 
-    out = pd.DataFrame({
-        "product": df["__product__"],
-        "event_date": pd.to_datetime(df["__event_date__"], errors="coerce"),
-        "quantity": pd.to_numeric(df["__sales_qty__"], errors="coerce").fillna(0.0),
-    })
+    event_date = df["__event_date__"]
+    quantity = pd.to_numeric(df["__sales_qty__"], errors="coerce").fillna(0.0)
+    mask = (
+        (df["__product__"] == product)
+        & (quantity > 0)
+        & (event_date.notna())
+        & (event_date >= start)
+        & (event_date <= end)
+    )
+    if not mask.any():
+        return pd.DataFrame(columns=["product", "event_date", "quantity"])
 
-    out = out[
-        (out["product"] == product)
-        & (out["quantity"] > 0)
-        & (out["event_date"].notna())
-        & (out["event_date"] >= start)
-        & (out["event_date"] <= end)
-    ].copy()
+    sub = df.loc[mask]
+    out = pd.DataFrame({
+        "product": sub["__product__"],
+        "event_date": sub["__event_date__"],
+        "quantity": quantity.loc[mask],
+    })
 
     return out.sort_values(["event_date"]).reset_index(drop=True)
 
@@ -611,6 +741,36 @@ def _impute_alloc_pricing_from_inbound(allocations: list[dict], inbound_all: pd.
             "exchange_rate": rate,
         })
     return out
+
+
+def _make_shortage_allocation(event_date: pd.Timestamp, shortage_qty: float, inbound_all: pd.DataFrame) -> dict:
+    """입출고 이력 부족으로 FIFO lot이 모자랄 때 판매 수량 보존용 보정 lot을 만든다."""
+    event_date = pd.to_datetime(event_date, errors="coerce")
+    seed = None
+
+    if not inbound_all.empty and pd.notna(event_date):
+        prior = inbound_all[pd.to_datetime(inbound_all["event_date"], errors="coerce") <= event_date].copy()
+        seed = _pick_adjustment_seed(prior, prefer_latest=True)
+
+    if seed is None:
+        seed = _pick_adjustment_seed(inbound_all, prefer_latest=True)
+
+    if seed is not None:
+        in_date = pd.to_datetime(seed["event_date"], errors="coerce")
+        unit = None if pd.isna(seed.get("unit_price")) else float(seed["unit_price"])
+        rate = None if pd.isna(seed.get("exchange_rate")) else float(seed["exchange_rate"])
+    else:
+        in_date = event_date
+        unit = None
+        rate = None
+
+    return {
+        "in_date": in_date if pd.notna(in_date) else event_date,
+        "taken_qty": float(shortage_qty),
+        "unit_price": unit,
+        "exchange_rate": rate,
+        "source": "shortage_adjustment",
+    }
 
 
 def fifo_for_product(
@@ -761,7 +921,10 @@ def fifo_for_product(
             lots, allocs, remain = consume_fifo_lots(lots, ev["quantity"])
             period_allocs.extend(allocs)
             if remain > 1e-9:
-                print(f"[주의] {product}: {ev['event_date'].date()} 출고 {ev['quantity']}kg 중 부족분 {remain}kg")
+                # 장부 이력에 누락/기초재고 차이가 있더라도 결과 수량 합계는 판매량과 맞춘다.
+                # 단가/환율은 해당 출고일 이전의 가장 최근 입고값을 우선 사용한다.
+                period_allocs.append(_make_shortage_allocation(ev["event_date"], remain, inbound_all))
+                print(f"[주의] {product}: {ev['event_date'].date()} 출고 {ev['quantity']}kg 중 부족분 {remain}kg 보정 반영")
 
     imputed_allocs = _impute_alloc_pricing_from_inbound(period_allocs, inbound_all)
     filtered_allocs = _only_priced_allocs(imputed_allocs)

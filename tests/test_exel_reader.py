@@ -256,6 +256,43 @@ class ExelReaderTest(unittest.TestCase):
         self.assertAlmostEqual(by_date["2026-01-19"], 16000.0)
         self.assertAlmostEqual(by_date["2026-02-19"], 6560.0)
 
+    def test_fifo_shortage_adjustment_preserves_sales_quantity(self):
+        product = "Cobalt Tetroxide"
+        start = pd.Timestamp("2025-08-01")
+        cutoff = pd.Timestamp("2025-08-31")
+
+        df = pd.DataFrame(
+            {
+                "__product__": [product, product],
+                "__event_date__": [pd.Timestamp("2025-07-01"), pd.Timestamp("2025-08-21")],
+                "__in_date__": [pd.Timestamp("2025-07-01"), pd.Timestamp("2025-08-21")],
+                "__row_date__": [pd.Timestamp("2025-07-01"), pd.Timestamp("2025-08-21")],
+                "__stock__": [2000.0, 0.0],
+                "__sales_qty__": [0.0, 2300.0],
+                "__in_qty__": [2000.0, 0.0],
+                "__unit_price__": [12.5, None],
+                "__exchange_rate__": [1370.0, None],
+                "__supplier__": ["Global Supplier", ""],
+                "__customer__": ["", ""],
+                "__note__": ["", ""],
+            }
+        )
+
+        with patch("sw_exel_py_project.exel_reader._years_to_scan_desc", return_value=(2025,)):
+            allocs = fifo_for_product(
+                file_path=Path("dummy.xlsx"),
+                product=product,
+                year=2025,
+                sales_qty=2300.0,
+                start=start,
+                cutoff=cutoff,
+                df=df,
+            )
+
+        self.assertAlmostEqual(sum(float(a["taken_qty"]) for a in allocs), 2300.0)
+        self.assertEqual(str(pd.Timestamp(allocs[0]["in_date"]).date()), "2025-07-01")
+        self.assertAlmostEqual(float(allocs[0]["unit_price"]), 12.5)
+
 
 if __name__ == "__main__":
     unittest.main()
