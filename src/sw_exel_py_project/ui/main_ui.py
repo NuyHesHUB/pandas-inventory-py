@@ -116,7 +116,7 @@ def run_ui():
     output_file_label = tk.Label(root, text=output_placeholder, anchor="w")
     output_file_label.pack(fill="x", padx=12)
 
-    year_var = tk.StringVar(value="2025")
+    year_var = tk.StringVar(value="2026")
     tk.Label(root, text="연도 선택").pack()
     tk.Entry(root, textvariable=year_var, width=10).pack()
 
@@ -124,11 +124,11 @@ def run_ui():
     frame = tk.Frame(root)
     frame.pack()
 
-    start_month_var = tk.StringVar(value="07")
-    start_day_var = tk.StringVar(value="24")
+    start_month_var = tk.StringVar(value="04")
+    start_day_var = tk.StringVar(value="23")
 
-    end_month_var = tk.StringVar(value="08")
-    end_day_var = tk.StringVar(value="25")
+    end_month_var = tk.StringVar(value="05")
+    end_day_var = tk.StringVar(value="21")
 
     tk.Entry(frame, textvariable=start_month_var, width=3).pack(side=tk.LEFT)
     tk.Label(frame, text="-").pack(side=tk.LEFT)

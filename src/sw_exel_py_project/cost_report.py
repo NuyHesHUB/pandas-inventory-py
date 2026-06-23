@@ -490,6 +490,7 @@ def renew_cost_report_from_template(
                 start=start,
                 cutoff=end,
                 df=df,
+                include_ending_stock_lots=True,
             )
         allocs = alloc_cache[source_product]
         allocs_by_item[item] = allocs
@@ -576,7 +577,7 @@ def renew_cost_report_from_template(
         for i, tr in enumerate(item_rows):
             if i < len(allocs):
                 a = allocs[i]
-                assigned_qty[tr.excel_row] = float(a["taken_qty"])
+                assigned_qty[tr.excel_row] = "-" if a.get("display_only") else float(a["taken_qty"])
                 assigned_price[tr.excel_row] = _to_float(a.get("unit_price"))
                 assigned_rate[tr.excel_row] = _to_float(a.get("exchange_rate"))
                 if a.get("in_date"):
@@ -602,7 +603,7 @@ def renew_cost_report_from_template(
         note = assigned_note.get(r, _normalize_note_text(tr.note))
 
         if qty is not _KEEP_CELL:
-            ws.cell(r, 6).value = _num_for_excel(qty)
+            ws.cell(r, 6).value = qty if isinstance(qty, str) else _num_for_excel(qty)
         if price is _KEEP_CELL:
             pass
         elif price is _CLEAR_CELL:
@@ -705,6 +706,7 @@ def generate_cost_report_without_template(
             start=start,
             cutoff=end,
             df=df,
+            include_ending_stock_lots=True,
         )
 
         if not allocs:
@@ -734,7 +736,7 @@ def generate_cost_report_without_template(
                     "exchange_rate": _to_float(a.get("exchange_rate")),
                     "duty_rate": 0.0,
                     "duty_factor": 0.0,
-                    "quantity": float(a["taken_qty"]),
+                    "quantity": "-" if a.get("display_only") else float(a["taken_qty"]),
                     "note": str(a.get("in_date")).replace("-", "/") if a.get("in_date") else "",
                 }
             )
@@ -761,7 +763,7 @@ def generate_cost_report_without_template(
 
         ws.cell(i, 4).value = row["duty_rate"]
         ws.cell(i, 5).value = row["duty_factor"]
-        ws.cell(i, 6).value = _num_for_excel(float(row["quantity"]))
+        ws.cell(i, 6).value = row["quantity"] if isinstance(row["quantity"], str) else _num_for_excel(float(row["quantity"]))
         changed_cells += 3
 
         if row["unit_price"] is not None and row["exchange_rate"] is not None:
