@@ -124,11 +124,11 @@ def run_ui():
     frame = tk.Frame(root)
     frame.pack()
 
-    start_month_var = tk.StringVar(value="04")
-    start_day_var = tk.StringVar(value="23")
+    start_month_var = tk.StringVar(value="05")
+    start_day_var = tk.StringVar(value="22")
 
-    end_month_var = tk.StringVar(value="05")
-    end_day_var = tk.StringVar(value="21")
+    end_month_var = tk.StringVar(value="06")
+    end_day_var = tk.StringVar(value="22")
 
     tk.Entry(frame, textvariable=start_month_var, width=3).pack(side=tk.LEFT)
     tk.Label(frame, text="-").pack(side=tk.LEFT)
