@@ -199,19 +199,146 @@ class ExelReaderTest(unittest.TestCase):
             }
         )
 
+        with patch("sw_exel_py_project.exel_reader._years_to_scan_desc", return_value=(2025,)):
+            allocs = fifo_for_product(
+                file_path=Path("dummy.xlsx"),
+                product=product,
+                year=2025,
+                sales_qty=100.0,
+                start=start,
+                cutoff=cutoff,
+                df=df,
+            )
+
+        self.assertTrue(allocs)
+        self.assertEqual(str(pd.Timestamp(allocs[0]["in_date"]).date()), "2025-07-29")
+        self.assertAlmostEqual(float(allocs[0]["taken_qty"]), 100.0)
+
+    def test_fifo_uses_sales_plus_ending_stock_reverse_lots(self):
+        product = "AMBN"
+        start = pd.Timestamp("2026-05-01")
+        cutoff = pd.Timestamp("2026-05-31")
+
+        df = pd.DataFrame(
+            {
+                "__product__": [product] * 6,
+                "__event_date__": [
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-03-01"),
+                    pd.Timestamp("2026-04-01"),
+                    pd.Timestamp("2026-05-01"),
+                    pd.Timestamp("2026-05-31"),
+                ],
+                "__in_date__": [
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-03-01"),
+                    pd.Timestamp("2026-04-01"),
+                    pd.Timestamp("2026-05-01"),
+                    pd.Timestamp("2026-05-31"),
+                ],
+                "__row_date__": [
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-03-01"),
+                    pd.Timestamp("2026-04-01"),
+                    pd.Timestamp("2026-05-01"),
+                    pd.Timestamp("2026-05-31"),
+                ],
+                "__stock__": [16000.0, 32000.0, 48000.0, 64000.0, 80000.0, 31200.0],
+                "__sales_qty__": [0.0, 0.0, 0.0, 0.0, 0.0, 31200.0],
+                "__in_qty__": [16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 0.0],
+                "__unit_price__": [10.1, 10.2, 10.3, 10.4, 10.5, None],
+                "__exchange_rate__": [1401.0, 1402.0, 1403.0, 1404.0, 1405.0, None],
+                "__supplier__": [""] * 6,
+                "__customer__": [""] * 6,
+                "__note__": [""] * 6,
+            }
+        )
+
         allocs = fifo_for_product(
             file_path=Path("dummy.xlsx"),
             product=product,
-            year=2025,
-            sales_qty=100.0,
+            year=2026,
+            sales_qty=31200.0,
             start=start,
             cutoff=cutoff,
             df=df,
         )
 
-        self.assertTrue(allocs)
-        self.assertEqual(str(pd.Timestamp(allocs[0]["in_date"]).date()), "2025-07-29")
-        self.assertAlmostEqual(float(allocs[0]["taken_qty"]), 100.0)
+        by_date = {str(a["in_date"]): float(a["taken_qty"]) for a in allocs}
+        self.assertAlmostEqual(sum(by_date.values()), 31200.0)
+        self.assertNotIn("2026-01-01", by_date)
+        self.assertAlmostEqual(by_date["2026-02-01"], 14400.0)
+        self.assertAlmostEqual(by_date["2026-03-01"], 16000.0)
+        self.assertAlmostEqual(by_date["2026-04-01"], 800.0)
+
+    def test_fifo_display_lots_exclude_remainder_of_sold_lot(self):
+        product = "BZ(CP)"
+        start = pd.Timestamp("2026-04-23")
+        cutoff = pd.Timestamp("2026-05-21")
+
+        df = pd.DataFrame(
+            {
+                "__product__": [product] * 6,
+                "__event_date__": [
+                    pd.Timestamp("2026-01-09"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-03-31"),
+                    pd.Timestamp("2026-04-06"),
+                    pd.Timestamp("2026-05-20"),
+                ],
+                "__in_date__": [
+                    pd.Timestamp("2026-01-09"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-03-31"),
+                    pd.Timestamp("2026-04-06"),
+                    pd.Timestamp("2026-05-20"),
+                ],
+                "__row_date__": [
+                    pd.Timestamp("2026-01-09"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-02-24"),
+                    pd.Timestamp("2026-03-31"),
+                    pd.Timestamp("2026-04-06"),
+                    pd.Timestamp("2026-05-20"),
+                ],
+                "__stock__": [4340.0, 6220.0, 11220.0, 16220.0, 21220.0, 20000.0],
+                "__sales_qty__": [0.0] * 6,
+                "__in_qty__": [4340.0, 1880.0, 5000.0, 5000.0, 5000.0, 5000.0],
+                "__unit_price__": [2.78, 2.78, 2.82, 2.82, 2.82, 3.18],
+                "__exchange_rate__": [1441.8, 1497.3, 1497.3, 1472.6, 1507.6, 1503.8],
+                "__supplier__": [""] * 6,
+                "__customer__": [""] * 6,
+                "__note__": [""] * 6,
+            }
+        )
+
+        allocs = fifo_for_product(
+            file_path=Path("dummy.xlsx"),
+            product=product,
+            year=2026,
+            sales_qty=6220.0,
+            start=start,
+            cutoff=cutoff,
+            df=df,
+            include_ending_stock_lots=True,
+        )
+
+        self.assertEqual(len(allocs), 6)
+        self.assertEqual([bool(a.get("display_only")) for a in allocs], [False, False, True, True, True, True])
+        self.assertEqual([(a["unit_price"], a["exchange_rate"], a["in_date"]) for a in allocs], [
+            (2.78, 1441.8, "2026-01-09"),
+            (2.78, 1497.3, "2026-02-24"),
+            (2.82, 1497.3, "2026-02-24"),
+            (2.82, 1472.6, "2026-03-31"),
+            (2.82, 1507.6, "2026-04-06"),
+            (3.18, 1503.8, "2026-05-20"),
+        ])
+        self.assertEqual([float(a["taken_qty"]) for a in allocs], [4340.0, 1880.0, 0.0, 0.0, 0.0, 0.0])
 
     def test_fifo_negative_delta_assigns_to_oldest_prestart_lot(self):
         product = "AMBN"

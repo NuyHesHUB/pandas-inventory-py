@@ -724,10 +724,22 @@ def consume_fifo_lots(lots: list[dict], qty: float) -> tuple[list[dict], list[di
 
 def _only_priced_allocs(allocations: list[dict]) -> list[dict]:
     bucket: dict[tuple[str, float | None, float | None], float] = {}
+    display_rows: list[dict] = []
     for a in allocations:
         in_date = a["in_date"].strftime("%Y-%m-%d") if isinstance(a["in_date"], pd.Timestamp) else str(a["in_date"])
         unit_price = None if a["unit_price"] is None else float(a["unit_price"])
         exchange_rate = None if a["exchange_rate"] is None else float(a["exchange_rate"])
+        if a.get("display_only"):
+            display_rows.append(
+                {
+                    "in_date": in_date,
+                    "taken_qty": 0.0,
+                    "unit_price": unit_price,
+                    "exchange_rate": exchange_rate,
+                    "display_only": True,
+                }
+            )
+            continue
         key = (in_date, unit_price, exchange_rate)
         bucket[key] = bucket.get(key, 0.0) + float(a["taken_qty"])
 
@@ -740,7 +752,8 @@ def _only_priced_allocs(allocations: list[dict]) -> list[dict]:
         }
         for k, v in bucket.items()
     ]
-    out.sort(key=lambda x: (x["in_date"], x["unit_price"], x["exchange_rate"]))
+    out.extend(display_rows)
+    out.sort(key=lambda x: (x["in_date"], x["unit_price"], x["exchange_rate"], bool(x.get("display_only"))))
     return out
 
 
@@ -771,6 +784,16 @@ def _impute_alloc_pricing_from_inbound(allocations: list[dict], inbound_all: pd.
         unit = a.get("unit_price")
         rate = a.get("exchange_rate")
 
+        if a.get("display_only"):
+            out.append({
+                "in_date": a["in_date"],
+                "taken_qty": a["taken_qty"],
+                "unit_price": unit,
+                "exchange_rate": rate,
+                "display_only": True,
+            })
+            continue
+
         if unit is None and pd.notna(in_date):
             unit = _latest_before(in_date, "unit_price")
         if rate is None and pd.notna(in_date):
@@ -781,38 +804,85 @@ def _impute_alloc_pricing_from_inbound(allocations: list[dict], inbound_all: pd.
             "taken_qty": a["taken_qty"],
             "unit_price": unit,
             "exchange_rate": rate,
+            "display_only": bool(a.get("display_only")),
         })
     return out
 
 
-def _make_shortage_allocation(event_date: pd.Timestamp, shortage_qty: float, inbound_all: pd.DataFrame) -> dict:
-    """입출고 이력 부족으로 FIFO lot이 모자랄 때 판매 수량 보존용 보정 lot을 만든다."""
-    event_date = pd.to_datetime(event_date, errors="coerce")
-    seed = None
+def _allocate_fifo_by_ending_stock(
+    inbound_all: pd.DataFrame,
+    sales_qty: float,
+    ending_stock: float,
+    include_ending_stock_lots: bool = False,
+) -> list[dict]:
+    """종료재고 기준으로 최근 입고를 역산한 뒤 판매량만큼 FIFO 배분한다."""
+    sales_qty = float(sales_qty)
+    if sales_qty <= 1e-9 or inbound_all.empty:
+        return []
 
-    if not inbound_all.empty and pd.notna(event_date):
-        prior = inbound_all[pd.to_datetime(inbound_all["event_date"], errors="coerce") <= event_date].copy()
-        seed = _pick_adjustment_seed(prior, prefer_latest=True)
+    inbound = inbound_all.copy()
+    inbound["event_date"] = pd.to_datetime(inbound["event_date"], errors="coerce")
+    inbound["quantity"] = pd.to_numeric(inbound["quantity"], errors="coerce").fillna(0.0)
+    inbound = inbound[(inbound["event_date"].notna()) & (inbound["quantity"] > 0)].sort_values("event_date")
+    if inbound.empty:
+        return []
 
-    if seed is None:
-        seed = _pick_adjustment_seed(inbound_all, prefer_latest=True)
+    scope_qty = max(sales_qty, sales_qty + float(ending_stock))
+    remaining_scope = scope_qty
+    scoped_lots: list[dict] = []
 
-    if seed is not None:
-        in_date = pd.to_datetime(seed["event_date"], errors="coerce")
-        unit = None if pd.isna(seed.get("unit_price")) else float(seed["unit_price"])
-        rate = None if pd.isna(seed.get("exchange_rate")) else float(seed["exchange_rate"])
-    else:
-        in_date = event_date
-        unit = None
-        rate = None
+    for _, row in inbound.sort_values("event_date", ascending=False).iterrows():
+        if remaining_scope <= 1e-9:
+            break
 
-    return {
-        "in_date": in_date if pd.notna(in_date) else event_date,
-        "taken_qty": float(shortage_qty),
-        "unit_price": unit,
-        "exchange_rate": rate,
-        "source": "shortage_adjustment",
-    }
+        lot_qty = float(row["quantity"])
+        take = min(lot_qty, remaining_scope)
+        scoped_lots.append({
+            "in_date": row["event_date"],
+            "quantity": take,
+            "unit_price": None if pd.isna(row["unit_price"]) else float(row["unit_price"]),
+            "exchange_rate": None if pd.isna(row["exchange_rate"]) else float(row["exchange_rate"]),
+        })
+        remaining_scope -= take
+
+    if remaining_scope > 1e-9:
+        seed = _pick_adjustment_seed(inbound, prefer_latest=False)
+        if seed is not None:
+            scoped_lots.append({
+                "in_date": pd.to_datetime(seed["event_date"], errors="coerce"),
+                "quantity": remaining_scope,
+                "unit_price": None if pd.isna(seed.get("unit_price")) else float(seed["unit_price"]),
+                "exchange_rate": None if pd.isna(seed.get("exchange_rate")) else float(seed["exchange_rate"]),
+            })
+
+    scoped_lots.sort(key=lambda x: x["in_date"])
+
+    allocations: list[dict] = []
+    remaining_sales = sales_qty
+    for lot in scoped_lots:
+        if remaining_sales <= 1e-9:
+            if include_ending_stock_lots:
+                allocations.append({
+                    "in_date": lot["in_date"],
+                    "taken_qty": 0.0,
+                    "unit_price": lot["unit_price"],
+                    "exchange_rate": lot["exchange_rate"],
+                    "display_only": True,
+                })
+            continue
+
+        take = min(float(lot["quantity"]), remaining_sales)
+        if take <= 1e-9:
+            continue
+        allocations.append({
+            "in_date": lot["in_date"],
+            "taken_qty": take,
+            "unit_price": lot["unit_price"],
+            "exchange_rate": lot["exchange_rate"],
+        })
+        remaining_sales -= take
+
+    return allocations
 
 
 def fifo_for_product(
@@ -822,157 +892,55 @@ def fifo_for_product(
     sales_qty: float,
     start: pd.Timestamp,
     cutoff: pd.Timestamp,
-    current_stock: float = 0.0,
+    current_stock: float | None = None,
     df: pd.DataFrame | None = None,
+    include_ending_stock_lots: bool = False,
 ):
     """
-    이벤트 기반 FIFO
-    1) 시작 전 입고/출고를 실제 FIFO로 반영하여 시작 시점 잔량 로트 구성
-    2) 기간 중 입고/출고를 날짜순으로 반영
-    3) 가격 있는 로트만 결과로 반환
+    종료재고 기준 FIFO
+    1) 기간 판매량은 호출자가 전달한 sales_qty를 사용한다.
+    2) cutoff 기준 남은 재고와 판매량을 더해 최근 입고부터 역산한다.
+    3) 역산 범위의 가장 오래된 lot부터 판매량만큼 배분한다.
     """
     if df is None:
         df = load_inventory_df(str(file_path), year)
         if df.empty:
             return []
 
-    boundary = start - pd.Timedelta(days=1)
-
+    ending_stock = (
+        float(current_stock)
+        if current_stock is not None
+        else get_stock_snapshot_at_or_before(
+            file_path=file_path,
+            year=year,
+            product=product,
+            asof=cutoff,
+            df=df,
+        )
+    )
     inbound_all = _load_inbound_events_progressive(
         file_path=file_path,
         year=year,
         product=product,
         cutoff=cutoff,
         base_df=df,
-        min_required_qty=float(sales_qty),
+        min_required_qty=max(float(sales_qty), float(sales_qty) + float(ending_stock)),
     )
     if inbound_all.empty:
         print(f"[경고] {product}: cutoff 이전 입고 없음")
         return []
 
-    inbound_pre = inbound_all[inbound_all["event_date"] <= boundary].copy()
-    inbound_period = inbound_all[inbound_all["event_date"] >= start].copy()
-
-    sales_pre = extract_sales_events(
-        file_path,
-        year,
-        product,
-        start=pd.Timestamp(year=year, month=1, day=1),
-        end=boundary,
-        df=df,
+    period_allocs = _allocate_fifo_by_ending_stock(
+        inbound_all,
+        sales_qty,
+        ending_stock,
+        include_ending_stock_lots=include_ending_stock_lots,
     )
-    sales_period = extract_sales_events(
-        file_path,
-        year,
-        product,
-        start=start,
-        end=cutoff,
-        df=df,
-    )
-
-    # 시작 전 로트 큐 구성
-    lots: list[dict] = []
-    for _, row in inbound_pre.iterrows():
-        lots.append({
-            "in_date": row["event_date"],
-            "quantity": float(row["quantity"]),
-            "unit_price": None if pd.isna(row["unit_price"]) else float(row["unit_price"]),
-            "exchange_rate": None if pd.isna(row["exchange_rate"]) else float(row["exchange_rate"]),
-        })
-
-    # 시작 전 출고 소진
-    for _, row in sales_pre.iterrows():
-        lots, _, _ = consume_fifo_lots(lots, float(row["quantity"]))
-
-    # 시작 직전 장부재고와 FIFO lot 잔량을 맞추어 보정
-    # (입출고 수량만으로 설명되지 않는 재고조정/기초재고 이월 차이를 흡수)
-    snapshot_stock = get_stock_snapshot_at_or_before(
-        file_path=file_path,
-        year=year,
-        product=product,
-        asof=boundary,
-        df=df,
-    )
-    traced_stock = float(sum(float(x["quantity"]) for x in lots))
-    delta = traced_stock - float(snapshot_stock)
-
-    if delta > 1e-9:
-        # 추적 잔량이 장부보다 크면 FIFO 순서로 추가 소진
-        lots, _, _ = consume_fifo_lots(lots, delta)
-    elif delta < -1e-9:
-        # 추적 잔량이 장부보다 작으면 보정 lot 추가.
-        # 우선순위:
-        # 1) 시작 전 가장 이른 입고 seed (FIFO 일관성)
-        # 2) 기간 내 가장 이른 입고 seed (시작 전 seed가 전혀 없을 때)
-        # 3) 그래도 없으면 boundary
-        seed = _pick_adjustment_seed(inbound_pre, prefer_latest=False)
-        if seed is None:
-            seed = _pick_adjustment_seed(inbound_period, prefer_latest=False)
-
-        if seed is not None:
-            adj_in_date = pd.to_datetime(seed["event_date"], errors="coerce")
-            adj_unit = None if pd.isna(seed.get("unit_price")) else float(seed["unit_price"])
-            adj_rate = None if pd.isna(seed.get("exchange_rate")) else float(seed["exchange_rate"])
-        else:
-            adj_in_date = boundary
-            adj_unit = None
-            adj_rate = None
-
-        lots.append({
-            "in_date": adj_in_date if pd.notna(adj_in_date) else boundary,
-            "quantity": -delta,
-            "unit_price": adj_unit,
-            "exchange_rate": adj_rate,
-        })
-        lots.sort(key=lambda x: x["in_date"])
-
-    # 기간 중 이벤트 결합
-    period_events = []
-
-    for _, row in inbound_period.iterrows():
-        period_events.append({
-            "kind": "in",
-            "event_date": row["event_date"],
-            "quantity": float(row["quantity"]),
-            "unit_price": None if pd.isna(row["unit_price"]) else float(row["unit_price"]),
-            "exchange_rate": None if pd.isna(row["exchange_rate"]) else float(row["exchange_rate"]),
-        })
-
-    for _, row in sales_period.iterrows():
-        period_events.append({
-            "kind": "out",
-            "event_date": row["event_date"],
-            "quantity": float(row["quantity"]),
-        })
-
-    # 같은 날짜면 입고 먼저, 출고 나중
-    period_events.sort(key=lambda x: (x["event_date"], 0 if x["kind"] == "in" else 1))
-
-    period_allocs = []
-
-    for ev in period_events:
-        if ev["kind"] == "in":
-            lots.append({
-                "in_date": ev["event_date"],
-                "quantity": ev["quantity"],
-                "unit_price": ev["unit_price"],
-                "exchange_rate": ev["exchange_rate"],
-            })
-            lots.sort(key=lambda x: x["in_date"])
-        else:
-            lots, allocs, remain = consume_fifo_lots(lots, ev["quantity"])
-            period_allocs.extend(allocs)
-            if remain > 1e-9:
-                # 장부 이력에 누락/기초재고 차이가 있더라도 결과 수량 합계는 판매량과 맞춘다.
-                # 단가/환율은 해당 출고일 이전의 가장 최근 입고값을 우선 사용한다.
-                period_allocs.append(_make_shortage_allocation(ev["event_date"], remain, inbound_all))
-                print(f"[주의] {product}: {ev['event_date'].date()} 출고 {ev['quantity']}kg 중 부족분 {remain}kg 보정 반영")
-
     imputed_allocs = _impute_alloc_pricing_from_inbound(period_allocs, inbound_all)
     filtered_allocs = _only_priced_allocs(imputed_allocs)
 
-    total = sum(a["taken_qty"] for a in filtered_allocs)
-    print(f"[결과] {product} | FIFO(event) | 기간배분건수={len(filtered_allocs)} | 합계={total} | 기대값={sales_qty}")
+    total = sum(a["taken_qty"] for a in filtered_allocs if not a.get("display_only"))
+    print(f"[결과] {product} | FIFO(ending-stock) | 종료재고={ending_stock} | 기간배분건수={len(filtered_allocs)} | 합계={total} | 기대값={sales_qty}")
     return filtered_allocs
 
 
@@ -1146,7 +1114,7 @@ def filter_and_fifo(result: dict):
         product = row["product"]
         qty = float(row["quantity"])
 
-        current_stock = get_current_stock(file_path, year, product, start, end, df=df_all)
+        current_stock = get_stock_snapshot_at_or_before(file_path, year, product, end, df=df_all)
 
         print(f"DEBUG - FIFO 처리중: {product}, 판매수량={qty}, 현재고(보고)={current_stock}")
         allocations = fifo_for_product(
