@@ -4,7 +4,6 @@ import pandas as pd
 
 from .app import format_summary_lines, run_cost_report_from_ui_result
 from .cost_report import generate_cost_report_without_template, renew_cost_report_from_template
-from .exel_reader import filter_and_fifo, filter_excel_by_ui
 from .ui.main_ui import run_ui
 
 
@@ -80,41 +79,18 @@ def main():
         return
 
     if args.ui:
-        result = run_ui()
-        if not result:
-            print("실행이 취소되었습니다.")
-            return
-
-        if result.get("mode") == "cost_report":
+        def _runner(result: dict) -> list[str]:
             summary, use_template = run_cost_report_from_ui_result(result)
             if use_template:
                 print("=== 결과물 템플릿 갱신 완료(UI) ===")
             else:
                 print("=== 결과물 신규 생성 완료(UI, 템플릿 미사용) ===")
-
-            for line in format_summary_lines(summary):
+            lines = format_summary_lines(summary)
+            for line in lines:
                 print(line)
-            return
+            return lines
 
-        pd.set_option('display.max_rows', None)
-
-        # 1) 판매 합계 DataFrame (원래 출력하던 것)
-        sales_df = filter_excel_by_ui(result)
-        print("=== 판매 합계 ===")
-        print(sales_df)
-
-        # 2) FIFO 추적 결과
-        fifo_results = filter_and_fifo(result)
-        print("\n=== FIFO 추적 결과 ===")
-        for item in fifo_results:
-            print(f"품목: {item['product']}, 판매합계: {item['sales_qty']}")
-            for alloc in item["fifo_allocations"]:
-                print(
-                    f"  입고일: {alloc['in_date']}, "
-                    f"소진량: {alloc['taken_qty']}, "
-                    f"단가: {alloc.get('unit_price')}, "
-                    f"환율: {alloc.get('exchange_rate')}"
-                )
+        run_ui(on_run=_runner)
         return
 
     if not args.file:
