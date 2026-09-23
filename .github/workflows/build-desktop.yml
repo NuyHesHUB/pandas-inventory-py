@@ -3,6 +3,8 @@ name: Build desktop apps
 on:
   workflow_dispatch:
   push:
+    branches:
+      - feat/desktop-app  # 빌드 구성 검증용 (안정화 후 제거)
     tags:
       - "v*"
 
