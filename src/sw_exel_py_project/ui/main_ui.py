@@ -169,7 +169,10 @@ def run_ui(on_run=None):
     year_box = tk.Spinbox(
         period, from_=2000, to=2100, textvariable=year_var, width=6, font=base,
         relief="flat", highlightthickness=1, highlightbackground=FIELD_BORDER,
-        bg=FIELD_BG, buttonbackground=BTN_BG, command=lambda: on_year_changed(),
+        bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, buttonbackground=BTN_BG,
+        # macOS 다크 모드는 기본 글자색이 흰색이라 배경(흰색)을 강제한 위젯에서는
+        # 글자색도 함께 명시해야 한다.
+        command=lambda: on_year_changed(),
     )
     year_box.grid(row=0, column=1, sticky="w", pady=4, ipady=2)
     year_box.bind("<KeyRelease>", lambda _e: on_year_changed())
