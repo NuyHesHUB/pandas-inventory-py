@@ -4,7 +4,7 @@ claude.ai/design '원가 결과물 생성 v2' 디자인을 tkinter로 옮긴 화
 타이틀바는 OS 네이티브를 쓰고, 본문 레이아웃/색/상태바만 디자인을 따른다.
 
 입력 정책:
-- 재고관리대장 / 결과물 템플릿 / 저장 경로 모두 필수
+- 재고관리대장 / 저장 경로 모두 필수 (템플릿 없이 항상 신규 생성 모드)
 - 연도는 실행 시점의 올해가 기본값, 기간(시작~종료)은 달력에서 직접 선택
 """
 
@@ -55,7 +55,6 @@ def run_ui(on_run=None):
     """
     state = {
         "source": "",
-        "template": "",
         "output": "",
         "start": None,  # (month, day)
         "end": None,
@@ -130,25 +129,12 @@ def run_ui(on_run=None):
         path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
         if path:
             state["source"] = path
-            if not state["template"]:
-                candidate = Path(path).parent / "결과물.xlsx"
-                if candidate.exists():
-                    state["template"] = str(candidate)
-            state["done_file"] = ""
-            refresh()
-
-    def pick_template():
-        path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        if path:
-            state["template"] = path
             state["done_file"] = ""
             refresh()
 
     def pick_output():
         initial = "결과물_자동생성.xlsx"
-        if state["template"]:
-            initial = f"{Path(state['template']).stem}_자동생성.xlsx"
-        elif state["source"]:
+        if state["source"]:
             initial = f"{Path(state['source']).stem}_원가결과_자동생성.xlsx"
         path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
@@ -162,7 +148,6 @@ def run_ui(on_run=None):
 
     rows = [
         ("재고관리대장", "source", pick_source),
-        ("템플릿 파일", "template", pick_template),
         ("저장 위치", "output", pick_output),
     ]
     file_fields = {}
@@ -385,12 +370,10 @@ def run_ui(on_run=None):
         """(메시지, 색상, 실행가능) 순서는 디자인의 상태바 로직을 따른다."""
         if not state["source"]:
             return "재고관리대장 파일을 선택하세요.", MUTED, False
-        if not state["template"]:
-            return "결과물 템플릿 파일을 선택하세요.", MUTED, False
         if not state["output"]:
             return "저장할 파일 경로를 선택하세요.", MUTED, False
-        if Path(state["template"]).resolve(strict=False) == Path(state["output"]).resolve(strict=False):
-            return "저장 경로가 템플릿 파일과 같습니다. 다른 경로를 선택하세요.", RED, False
+        if Path(state["source"]).resolve(strict=False) == Path(state["output"]).resolve(strict=False):
+            return "저장 경로가 재고관리대장 파일과 같습니다. 다른 경로를 선택하세요.", RED, False
         if current_year() is None:
             return "연도를 올바르게 입력하세요.", RED, False
         s_d, e_d = to_date(state["start"]), to_date(state["end"])
@@ -405,7 +388,6 @@ def run_ui(on_run=None):
     def refresh():
         for key, placeholder in (
             ("source", "파일을 선택하세요"),
-            ("template", "파일을 선택하세요"),
             ("output", "파일을 선택하세요"),
         ):
             value = state[key]
@@ -442,9 +424,9 @@ def run_ui(on_run=None):
     def build_result():
         return {
             "mode": "cost_report",
-            "use_template": True,
+            "use_template": False,
             "file_path": state["source"],
-            "template_file": state["template"],
+            "template_file": "",
             "output_file": state["output"],
             "year": str(current_year()),
             "start_month": str(state["start"][0]),
