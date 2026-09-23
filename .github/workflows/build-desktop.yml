@@ -33,9 +33,12 @@ jobs:
         if: runner.os == 'Windows'
         run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.ico desktop_launcher.py
 
+      # macOS는 onefile이면 매 실행마다 번들을 풀고 라이브러리 서명을 재검증해
+      # 기동이 수 초~십수 초 걸린다. .app은 어차피 폴더라 onedir로 만들어도
+      # 배포 형태(zip 안의 .app 하나)는 동일하다.
       - name: Build executable (macOS)
         if: runner.os == 'macOS'
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.icns desktop_launcher.py
+        run: pyinstaller --noconfirm --clean --onedir --windowed --name CostReport --icon assets/icon.icns desktop_launcher.py
 
       # upload-artifact는 실행 권한을 보존하지 못하므로 macOS .app은 zip으로 묶는다.
       - name: Package (macOS)
