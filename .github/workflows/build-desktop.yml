@@ -1,0 +1,50 @@
+name: Build desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv 관리 Python(독립형 빌드)은 Tcl/Tk 동적 라이브러리를 PyInstaller가
+      # 제대로 담지 못하므로, tkinter 번들 실적이 검증된 python.org 공식 빌드를 쓴다.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install . pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport desktop_launcher.py
+
+      # upload-artifact는 실행 권한을 보존하지 못하므로 macOS .app은 zip으로 묶는다.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: cd dist && zip -r CostReport-macos.zip CostReport.app
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CostReport-windows
+          path: dist/CostReport.exe
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CostReport-macos
+          path: dist/CostReport-macos.zip

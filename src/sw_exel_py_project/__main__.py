@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
+from .app import format_summary_lines, run_cost_report_from_ui_result
 from .cost_report import generate_cost_report_without_template, renew_cost_report_from_template
 from .exel_reader import filter_and_fifo, filter_excel_by_ui
 from .ui.main_ui import run_ui
@@ -74,28 +75,8 @@ def main():
             )
             print("=== 결과물 신규 생성 완료(템플릿 미사용) ===")
 
-        print("저장 위치:", summary["output_file"])
-        print("데이터 행 수:", summary["template_rows"])
-        print("품목 수:", summary["template_items"])
-        print("매핑 성공 품목 수:", summary.get("mapped_items", 0))
-        print("변경 행 수:", summary.get("changed_rows", 0))
-        print("변경 셀 수:", summary.get("changed_cells", 0))
-        if summary.get("output_redirected"):
-            print("안내: 템플릿과 같은 저장 경로가 입력되어 자동으로 새 파일명으로 저장했습니다.")
-        if summary["unresolved_items"]:
-            print("매핑 실패 품목:", ", ".join(summary["unresolved_items"]))
-        if summary.get("fallback_items"):
-            print("단가 lot 미탐지(기존값 사용) 품목:", ", ".join(summary["fallback_items"]))
-        if summary.get("excluded_price_items"):
-            print("원화/국내 단가 제외 품목:", ", ".join(summary["excluded_price_items"]))
-        if summary.get("anchored_items"):
-            print("기존 템플릿 lot 유지 품목:", ", ".join(summary["anchored_items"]))
-        if summary.get("overflow_items"):
-            print("lot 행수 초과(템플릿 행 자동 추가) 품목:", ", ".join(summary["overflow_items"]))
-        if summary.get("changed_cells", 0) == 0 and summary.get("anchored_items"):
-            print("안내: 선택 기간과 템플릿 기간이 같아 기존 템플릿 lot을 보존했습니다.")
-        elif summary.get("changed_cells", 0) == 0:
-            print("경고: 갱신된 셀이 없습니다. 매핑 실패 또는 기간/데이터 조건을 확인하세요.")
+        for line in format_summary_lines(summary):
+            print(line)
         return
 
     if args.ui:
@@ -105,53 +86,14 @@ def main():
             return
 
         if result.get("mode") == "cost_report":
-            year = int(result["year"])
-            start = pd.Timestamp(f"{year}-{int(result['start_month']):02d}-{int(result['start_day']):02d}")
-            end = pd.Timestamp(f"{year}-{int(result['end_month']):02d}-{int(result['end_day']):02d}")
-            use_template = bool(result.get("use_template", True))
-
+            summary, use_template = run_cost_report_from_ui_result(result)
             if use_template:
-                summary = renew_cost_report_from_template(
-                    inventory_file=Path(result["file_path"]),
-                    template_file=Path(result["template_file"]),
-                    output_file=Path(result["output_file"]),
-                    year=year,
-                    start=start,
-                    end=end,
-                )
                 print("=== 결과물 템플릿 갱신 완료(UI) ===")
             else:
-                summary = generate_cost_report_without_template(
-                    inventory_file=Path(result["file_path"]),
-                    output_file=Path(result["output_file"]),
-                    year=year,
-                    start=start,
-                    end=end,
-                )
                 print("=== 결과물 신규 생성 완료(UI, 템플릿 미사용) ===")
 
-            print("저장 위치:", summary["output_file"])
-            print("데이터 행 수:", summary["template_rows"])
-            print("품목 수:", summary["template_items"])
-            print("매핑 성공 품목 수:", summary.get("mapped_items", 0))
-            print("변경 행 수:", summary.get("changed_rows", 0))
-            print("변경 셀 수:", summary.get("changed_cells", 0))
-            if summary.get("output_redirected"):
-                print("안내: 템플릿과 같은 저장 경로가 입력되어 자동으로 새 파일명으로 저장했습니다.")
-            if summary["unresolved_items"]:
-                print("매핑 실패 품목:", ", ".join(summary["unresolved_items"]))
-            if summary.get("fallback_items"):
-                print("단가 lot 미탐지(기존값 사용) 품목:", ", ".join(summary["fallback_items"]))
-            if summary.get("excluded_price_items"):
-                print("원화/국내 단가 제외 품목:", ", ".join(summary["excluded_price_items"]))
-            if summary.get("anchored_items"):
-                print("기존 템플릿 lot 유지 품목:", ", ".join(summary["anchored_items"]))
-            if summary.get("overflow_items"):
-                print("lot 행수 초과(템플릿 행 자동 추가) 품목:", ", ".join(summary["overflow_items"]))
-            if summary.get("changed_cells", 0) == 0 and summary.get("anchored_items"):
-                print("안내: 선택 기간과 템플릿 기간이 같아 기존 템플릿 lot을 보존했습니다.")
-            elif summary.get("changed_cells", 0) == 0:
-                print("경고: 갱신된 셀이 없습니다. 매핑 실패 또는 기간/데이터 조건을 확인하세요.")
+            for line in format_summary_lines(summary):
+                print(line)
             return
 
         pd.set_option('display.max_rows', None)

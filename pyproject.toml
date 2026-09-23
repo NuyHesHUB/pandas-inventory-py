@@ -12,6 +12,14 @@ dependencies = [
     "openpyxl>=3.1.5,<4.0.0",
 ]
 
+[project.gui-scripts]
+cost-report-desktop = "sw_exel_py_project.desktop:run"
+
+[dependency-groups]
+build = [
+    "pyinstaller>=6.11",
+]
+
 [build-system]
 requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
