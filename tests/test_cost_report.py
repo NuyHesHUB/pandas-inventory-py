@@ -389,6 +389,72 @@ class CostReportTest(unittest.TestCase):
         self.assertEqual(out_ws.cell(6, 8).value, "2025/03/12(경동)")
         out_wb.close()
 
+    def test_template_report_recalculates_on_coincidental_qty_match(self):
+        # 고정 거래처가 매달 같은 양을 사가면 지난달 결과물 수량과 이번 달 판매량이
+        # 우연히 일치한다. 도구가 생성한 표준 행(표준 수식 + 숫자 단가)이면 anchor하지
+        # 않고 이번 기간 lot으로 재계산해야 한다.
+        df = pd.DataFrame(
+            {
+                "__event_date__": [pd.Timestamp("2025-08-01")],
+                "__product__": ["AMBN"],
+                "__sales_qty__": [100.0],
+            }
+        )
+        allocs = [
+            {
+                "in_date": "2025-07-29",
+                "taken_qty": 100.0,
+                "unit_price": 10.74,
+                "exchange_rate": 1471.5,
+            }
+        ]
+
+        td_path = Path("artifacts") / "tmp_template_qty_coincidence_test"
+        td_path.mkdir(parents=True, exist_ok=True)
+        inventory_file = td_path / "inventory.xlsx"
+        template_file = td_path / "template.xlsx"
+        output_file = td_path / "out.xlsx"
+        inventory_file.write_bytes(b"")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "2025년 7월"
+        ws.cell(5, 1).value = "Item"
+        ws.cell(5, 2).value = "수입단가\n(USD/kg)"
+        ws.cell(5, 3).value = "수입결제"
+        ws.cell(5, 6).value = "판매량\n(kg)"
+        ws.cell(5, 7).value = "기초원가\n(\\/kg)"
+        ws.cell(5, 8).value = "비고"
+        ws.cell(6, 1).value = "AMBN"
+        ws.cell(6, 2).value = 9.99
+        ws.cell(6, 3).value = 1300.0
+        ws.cell(6, 6).value = 100  # 이번 달 판매량과 우연히 일치
+        ws.cell(6, 7).value = "=B6*C6"  # 도구가 쓰는 표준 수식
+        ws.cell(6, 8).value = "2025/06/15"
+        wb.save(template_file)
+        wb.close()
+
+        with patch("sw_exel_py_project.cost_report.load_inventory_df", return_value=df), \
+             patch("sw_exel_py_project.cost_report.fifo_for_product", return_value=allocs):
+            summary = renew_cost_report_from_template(
+                inventory_file=inventory_file,
+                template_file=template_file,
+                output_file=output_file,
+                year=2025,
+                start=pd.Timestamp("2025-07-24"),
+                end=pd.Timestamp("2025-08-25"),
+            )
+
+        self.assertEqual(summary["anchored_items"], [])
+
+        out_wb = openpyxl.load_workbook(output_file, data_only=False)
+        out_ws = out_wb[out_wb.sheetnames[0]]
+        self.assertEqual(float(out_ws.cell(6, 2).value), 10.74)
+        self.assertEqual(float(out_ws.cell(6, 3).value), 1471.5)
+        self.assertEqual(float(out_ws.cell(6, 6).value), 100.0)
+        self.assertEqual(out_ws.cell(6, 8).value, "2025/07/29")
+        out_wb.close()
+
     def test_template_report_clears_krw_excluded_fallback_row(self):
         df = pd.DataFrame(
             {

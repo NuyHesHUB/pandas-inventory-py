@@ -423,7 +423,9 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
     out["__event_date__"] = _make_event_date_series(raw, date_col, arrival_col, year)
     out["__in_date__"] = _make_inbound_date_series(raw, date_col, arrival_col, year)
     out["__row_date__"] = _col_series(raw, date_col).apply(lambda x: _parse_korean_md(x, year))
-    out["__stock__"] = pd.to_numeric(_col_series(raw, stock_col), errors="coerce")
+    # 現재고도 수량/단가와 같은 규칙으로 파싱한다. 텍스트 "26,720" 같은 값이 NaN이 되면
+    # 종료재고 스냅샷이 어긋나 FIFO 역산 범위가 통째로 밀린다.
+    out["__stock__"] = _to_num_frame(_col_series(raw, stock_col).to_frame()).iloc[:, 0]
     out["__supplier__"] = _clean_text_series(_col_series(raw, supplier_col)) if supplier_col is not None else ""
     out["__customer__"] = _clean_text_series(_col_series(raw, customer_col)) if customer_col is not None else ""
     out["__note__"] = _clean_text_series(_col_series(raw, note_col)) if note_col is not None else ""
@@ -542,7 +544,7 @@ def _load_inbound_events_progressive(
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
-    out = out.sort_values(["event_date"]).reset_index(drop=True)
+    out = out.sort_values(["event_date"], kind="stable").reset_index(drop=True)
     return out
 
 
@@ -640,7 +642,8 @@ def extract_inbound_events(
         "note": note_s.loc[mask],
     })
 
-    return out.sort_values(["event_date"]).reset_index(drop=True)
+    # 같은 날짜의 입고가 여러 건이면 원장 기재 순서가 FIFO 순서다. 불안정 정렬 금지.
+    return out.sort_values(["event_date"], kind="stable").reset_index(drop=True)
 
 
 def _pick_adjustment_seed(events: pd.DataFrame, prefer_latest: bool) -> pd.Series | None:
@@ -652,7 +655,7 @@ def _pick_adjustment_seed(events: pd.DataFrame, prefer_latest: bool) -> pd.Serie
     pool = priced if not priced.empty else events
     if pool.empty:
         return None
-    pool = pool.sort_values("event_date")
+    pool = pool.sort_values("event_date", kind="stable")
     return pool.iloc[-1] if prefer_latest else pool.iloc[0]
 
 
@@ -768,7 +771,7 @@ def _impute_alloc_pricing_from_inbound(allocations: list[dict], inbound_all: pd.
     src["event_date"] = pd.to_datetime(src["event_date"], errors="coerce")
     src["unit_price"] = pd.to_numeric(src["unit_price"], errors="coerce")
     src["exchange_rate"] = pd.to_numeric(src["exchange_rate"], errors="coerce")
-    src = src.sort_values("event_date").reset_index(drop=True)
+    src = src.sort_values("event_date", kind="stable").reset_index(drop=True)
 
     def _latest_before(dt: pd.Timestamp, field: str):
         q = src[(src["event_date"].notna()) & (src["event_date"] <= dt) & (src[field].notna())]
@@ -823,7 +826,7 @@ def _allocate_fifo_by_ending_stock(
     inbound = inbound_all.copy()
     inbound["event_date"] = pd.to_datetime(inbound["event_date"], errors="coerce")
     inbound["quantity"] = pd.to_numeric(inbound["quantity"], errors="coerce").fillna(0.0)
-    inbound = inbound[(inbound["event_date"].notna()) & (inbound["quantity"] > 0)].sort_values("event_date")
+    inbound = inbound[(inbound["event_date"].notna()) & (inbound["quantity"] > 0)].sort_values("event_date", kind="stable")
     if inbound.empty:
         return []
 
@@ -831,7 +834,7 @@ def _allocate_fifo_by_ending_stock(
     remaining_scope = scope_qty
     scoped_lots: list[dict] = []
 
-    for _, row in inbound.sort_values("event_date", ascending=False).iterrows():
+    for _, row in inbound.sort_values("event_date", ascending=False, kind="stable").iterrows():
         if remaining_scope <= 1e-9:
             break
 
@@ -1041,24 +1044,35 @@ def get_stock_snapshot_at_or_before(
         if df.empty:
             return 0.0
 
-    sdf = df[(df["__product__"] == product) & (df["__row_date__"] <= asof)].copy()
-    if sdf.empty:
-        # 요청 연도에 이력이 없으면 과거 연도로 역추적
-        for yy in _years_to_scan_desc(file_path_str, int(year)):
-            if yy >= int(year):
-                continue
-            d_prev = load_inventory_df(file_path_str, int(yy))
-            if d_prev.empty:
-                continue
-            s_prev = d_prev[(d_prev["__product__"] == product) & (d_prev["__row_date__"] <= asof)].copy()
-            if s_prev.empty:
-                continue
-            last_prev = s_prev.sort_values("__row_date__").iloc[-1]
+    def _last_valid_stock(frame: pd.DataFrame) -> float | None:
+        # 現재고 칸이 비어 있는 행(주로 매출 행)은 건너뛰고 마지막 유효 잔고를 찾는다.
+        sdf = frame[
+            (frame["__product__"] == product)
+            & (frame["__row_date__"] <= asof)
+            & frame["__stock__"].notna()
+        ]
+        if sdf.empty:
+            return None
+        # 같은 날짜에 거래가 여러 건이면 원장 마지막 행의 잔고가 그 날의 재고다.
+        last_row = sdf.sort_values("__row_date__", kind="stable").iloc[-1]
+        return float(last_row["__stock__"])
+
+    stock = _last_valid_stock(df)
+    if stock is not None:
+        return stock
+
+    # 요청 연도에 유효 이력이 없으면 과거 연도로 역추적
+    for yy in _years_to_scan_desc(file_path_str, int(year)):
+        if yy >= int(year):
+            continue
+        d_prev = load_inventory_df(file_path_str, int(yy))
+        if d_prev.empty:
+            continue
+        stock = _last_valid_stock(d_prev)
+        if stock is not None:
             print(f"[추적] {product}: 재고스냅샷을 {yy}년 시트에서 보강")
-            return 0.0 if pd.isna(last_prev["__stock__"]) else float(last_prev["__stock__"])
-        return 0.0
-    last_row = sdf.sort_values("__row_date__").iloc[-1]
-    return 0.0 if pd.isna(last_row["__stock__"]) else float(last_row["__stock__"])
+            return stock
+    return 0.0
 
 
 def sum_inbound_until(

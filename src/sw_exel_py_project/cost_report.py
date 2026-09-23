@@ -33,6 +33,7 @@ class TemplateRow:
     quantity: float
     note: object
     note_date: pd.Timestamp | None
+    formula: str = ""
 
 
 def _canon(s: object) -> str:
@@ -149,6 +150,7 @@ def _load_template_rows(ws) -> list[TemplateRow]:
                 quantity=_to_float(f) or 0.0,
                 note=h,
                 note_date=_parse_note_date(h),
+                formula=g,
             )
         )
     return rows
@@ -391,6 +393,27 @@ def _template_quantity_matches_target(item_rows: list[TemplateRow], target_qty: 
     return abs(template_qty - float(target_qty)) <= max(1e-6, abs(float(target_qty)) * 0.001)
 
 
+def _is_standard_cost_formula(formula: object, excel_row: int) -> bool:
+    txt = str(formula or "").replace(" ", "").upper()
+    return txt in (f"=B{excel_row}*C{excel_row}", f"=B{excel_row}*C{excel_row}*E{excel_row}")
+
+
+def _template_rows_look_hand_tuned(item_rows: list[TemplateRow]) -> bool:
+    """사람이 직접 손댄 흔적(비표준 수식, 텍스트 단가)이 있는지 확인한다.
+
+    고정 거래처가 매달 같은 양을 사가면 지난달 결과물의 수량 합계가 이번 달
+    판매량과 우연히 일치해 낡은 lot이 그대로 유지되는 문제가 있었다.
+    수량 일치만으로는 anchor하지 않고, 도구가 쓰지 않는 형태의 셀이 있을 때만
+    사람이 확정한 배분으로 본다.
+    """
+    for tr in item_rows:
+        if not _is_standard_cost_formula(tr.formula, tr.excel_row):
+            return True
+        if isinstance(tr.unit_price_raw, str) and _to_float(tr.unit_price_raw) is None:
+            return True
+    return False
+
+
 def _template_rows_have_krw_price(item_rows: list[TemplateRow]) -> bool:
     for tr in item_rows:
         raw = "" if tr.unit_price_raw is None else str(tr.unit_price_raw).lower()
@@ -469,7 +492,12 @@ def renew_cost_report_from_template(
         has_excluded_price = _has_excluded_price_inbound(df, source_product, end)
         should_anchor = (
             template_period_matches
-            or _template_quantity_matches_target(item_rows, target_qty)
+            or (
+                _template_quantity_matches_target(item_rows, target_qty)
+                # 판매 0 + 템플릿 0 은 기존처럼 그대로 두고, 양수 수량이 일치할 때만
+                # 손댄 흔적을 요구해 '매달 같은 양' 우연 일치로 낡은 lot이 남는 것을 막는다.
+                and (target_qty <= 1e-9 or _template_rows_look_hand_tuned(item_rows))
+            )
         )
         if should_anchor and not _template_rows_have_krw_price(item_rows):
             anchored_items.append(item)

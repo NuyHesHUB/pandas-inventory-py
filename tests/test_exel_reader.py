@@ -12,6 +12,7 @@ from sw_exel_py_project.exel_reader import (
     _years_to_scan_desc,
     extract_inbound_events,
     fifo_for_product,
+    get_stock_snapshot_at_or_before,
 )
 
 
@@ -416,6 +417,53 @@ class ExelReaderTest(unittest.TestCase):
         self.assertAlmostEqual(by_date["2025-12-15"], 10720.0)
         self.assertAlmostEqual(by_date["2026-01-19"], 16000.0)
         self.assertAlmostEqual(by_date["2026-02-19"], 6560.0)
+
+    def test_stock_snapshot_skips_blank_stock_rows(self):
+        # 마감 직전 행(주로 매출 행)의 現재고 칸이 비어 있어도 0이 아니라
+        # 마지막 유효 잔고를 종료재고로 써야 한다.
+        df = pd.DataFrame(
+            {
+                "__product__": ["AMBN", "AMBN", "AMBN"],
+                "__row_date__": [
+                    pd.Timestamp("2025-07-01"),
+                    pd.Timestamp("2025-07-15"),
+                    pd.Timestamp("2025-07-20"),
+                ],
+                "__stock__": [1000.0, 2000.0, None],
+            }
+        )
+
+        stock = get_stock_snapshot_at_or_before(
+            file_path=Path("dummy.xlsx"),
+            year=2025,
+            product="AMBN",
+            asof=pd.Timestamp("2025-07-31"),
+            df=df,
+        )
+        self.assertEqual(stock, 2000.0)
+
+    def test_stock_snapshot_same_day_uses_last_ledger_row(self):
+        # 같은 날짜에 거래가 여러 건이면 원장 마지막 행의 잔고가 그 날의 재고다.
+        df = pd.DataFrame(
+            {
+                "__product__": ["AMBN"] * 3,
+                "__row_date__": [
+                    pd.Timestamp("2025-07-01"),
+                    pd.Timestamp("2025-07-10"),
+                    pd.Timestamp("2025-07-10"),
+                ],
+                "__stock__": [1000.0, 5000.0, 2000.0],
+            }
+        )
+
+        stock = get_stock_snapshot_at_or_before(
+            file_path=Path("dummy.xlsx"),
+            year=2025,
+            product="AMBN",
+            asof=pd.Timestamp("2025-07-31"),
+            df=df,
+        )
+        self.assertEqual(stock, 2000.0)
 
     def test_fifo_shortage_adjustment_preserves_sales_quantity(self):
         product = "Cobalt Tetroxide"
