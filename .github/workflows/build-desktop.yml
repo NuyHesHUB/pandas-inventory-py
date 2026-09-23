@@ -29,8 +29,13 @@ jobs:
       - name: Install dependencies
         run: pip install . pyinstaller
 
-      - name: Build executable
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport desktop_launcher.py
+      - name: Build executable (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.ico desktop_launcher.py
+
+      - name: Build executable (macOS)
+        if: runner.os == 'macOS'
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.icns desktop_launcher.py
 
       # upload-artifact는 실행 권한을 보존하지 못하므로 macOS .app은 zip으로 묶는다.
       - name: Package (macOS)

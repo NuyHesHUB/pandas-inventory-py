@@ -18,6 +18,8 @@ from datetime import date, timedelta
 from math import ceil
 from pathlib import Path
 
+from .app_icon import APP_ICON_PNG_BASE64
+
 # 디자인 팔레트 (accent = oklch(0.5 0.14 250) 근사값)
 ACCENT = "#0465af"
 ACCENT_DARK = "#03528f"
@@ -68,6 +70,12 @@ def run_ui(on_run=None):
     root.title("원가 결과물 생성")
     root.configure(bg=BG)
     root.resizable(False, False)
+    try:
+        icon = tk.PhotoImage(data=APP_ICON_PNG_BASE64)
+        root.iconphoto(True, icon)
+        root._app_icon = icon  # PhotoImage가 GC로 사라지지 않게 참조 유지
+    except tk.TclError:
+        pass
 
     default_font = tkfont.nametofont("TkDefaultFont")
     if sys.platform == "win32":
@@ -492,6 +500,9 @@ def run_ui(on_run=None):
 
     refresh()
     root.mainloop()
-    root.destroy()
+    try:
+        root.destroy()
+    except tk.TclError:
+        pass  # 타이틀바 X 버튼으로 닫으면 root가 이미 파괴된 상태다.
 
     return legacy_result

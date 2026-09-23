@@ -34,9 +34,16 @@ uv run python -m unittest
 
 ```powershell
 pip install . pyinstaller
-pyinstaller --noconfirm --clean --onefile --windowed --name CostReport desktop_launcher.py
+# Windows
+pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.ico desktop_launcher.py
+# macOS
+pyinstaller --noconfirm --clean --onefile --windowed --name CostReport --icon assets/icon.icns desktop_launcher.py
 # 결과물: dist/CostReport.exe (Windows) / dist/CostReport.app (macOS)
 ```
+
+앱 아이콘은 `assets/sungwoo_symbol.svg`가 원본이다. 아이콘을 바꾸려면 SVG를 교체한 뒤
+cairosvg로 512px PNG를 만들고 Pillow로 `assets/icon.ico`(Windows), `assets/icon.icns`(macOS),
+`src/sw_exel_py_project/ui/app_icon.py`(타이틀바용 64px base64)를 다시 생성한다.
 
 GitHub Actions 자동 빌드: `v*` 태그를 푸시하거나 Actions 탭에서 `Build desktop apps` 워크플로를
 수동 실행하면 Windows/macOS 실행파일이 아티팩트로 올라온다.
