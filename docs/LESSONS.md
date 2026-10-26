@@ -22,6 +22,11 @@
   fontconfig와 연결돼 있지 않고, PyInstaller 후크도 그 배치를 인식하지 못한다.
 - **해결**: GUI 실행/PyInstaller 빌드는 **python.org 공식 빌드** 사용.
   CI는 `actions/setup-python`으로 강제 (워크플로 주석 참조).
+- **WSL/Ubuntu 로컬 실행** (2026-10): Linux용 python.org 바이너리는 없으므로
+  deadsnakes PPA의 `python3.13` + `python3.13-tk`를 설치하고
+  `uv venv --clear --python /usr/bin/python3.13` 후 `uv sync`. **`-tk` 패키지를
+  빠뜨리기 쉬움** (없으면 tkinter import 자체가 실패). `.venv`를 새로 만들면 uv가
+  다시 독립형 3.14를 고르므로 위 명령으로 재생성할 것.
 - **교훈**: "tkinter import 성공"과 "tkinter가 제대로 동작"은 별개다.
   폰트가 깨지면 폰트 탓하기 전에 Tk 빌드가 fontconfig를 쓰는지부터 확인
   (`tkfont.Font(family=...).actual()`이 'fixed'로 나오면 Tk 빌드 문제).
