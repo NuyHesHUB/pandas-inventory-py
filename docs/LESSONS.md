@@ -31,6 +31,26 @@
   폰트가 깨지면 폰트 탓하기 전에 Tk 빌드가 fontconfig를 쓰는지부터 확인
   (`tkfont.Font(family=...).actual()`이 'fixed'로 나오면 Tk 빌드 문제).
 
+### WSL git은 자격 증명이 없어 push가 안 된다 (2026-10)
+- **증상**: WSL 쉘에서 `git push` → `fatal: could not read Username for
+  'https://github.com': No such device or address`. fetch/ls-remote는 되는데
+  (공개 레포라 읽기는 익명 허용) push만 실패한다.
+- **원인**: WSL git에 `credential.helper`가 설정돼 있지 않다. Windows 쪽 git에는
+  자격 증명 관리자가 붙어 있어서, 같은 레포를 Windows 터미널에서 밀면 성공한다.
+  그래서 "분명 아까는 됐는데" 하고 헷갈리기 쉽다.
+- **해결 1 (즉시)**: 레포가 `C:` 드라이브에 있으므로 Windows git을 그대로 쓴다.
+  ```bash
+  "/mnt/c/Program Files/Git/bin/git.exe" -C 'C:\path\to\repo' push origin <ref>
+  ```
+- **해결 2 (영구)**: WSL git을 Windows 자격 증명 관리자에 연결.
+  ```bash
+  git config --global credential.helper \
+    "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
+  ```
+- **교훈**: push가 실패하면 네트워크·권한·브랜치 보호를 의심하기 전에 **어느 git
+  바이너리로 실행했는지**부터 본다. 에러 문구가 "Username을 못 읽는다"면 인증 설정
+  문제이지 서버 거부가 아니다.
+
 ### 기타 패키징 함정
 - PyInstaller는 크로스 컴파일 불가 → OS별 CI 매트릭스로 빌드 (GitHub Actions).
 - `upload-artifact`는 실행 권한을 보존하지 않음 → macOS .app은 zip으로 묶어 업로드.
@@ -63,3 +83,12 @@
   (수기 흔적: 비표준 수식/텍스트 단가)를 요구할 것.
 - 합계가 맞아도 lot 분할이 틀릴 수 있다. 보정 seed가 데이터 공백을 조용히 메우므로
   "합계 일치"만으로 검증 완료라고 판단하지 말 것.
+- **판정은 거래의 증거로 하고, 거래처의 속성으로 하지 마라.** "공급처 상호에 한글이
+  있으면 국내 매입"은 상호가 한글인 수입처("화동", `Hefei Top Industry(무역회사)`)를
+  통째로 떨어뜨렸고, GLYCERIN 계열은 판매가 잡히는데 결과물에 0행으로 나왔다
+  (2026-10-27, aa0877f). 국내 매입 여부는 **입고(수입)단가가 원화냐(₩500 이상)** 로만
+  판별한다. 원장 실측상 ₩ 서식 행은 전부 500 이상, 달러·엔화 행은 전부 500 미만이라
+  이 기준은 값과 서식이 정확히 일치한다.
+- **품목이 결과물에서 통째로 빠지면 판매가 아니라 입고를 의심하라.** 판매 집계는
+  멀쩡한데 입고 lot이 0건이면 `[경고] ... cutoff 이전 입고 없음`만 찍히고 품목이
+  조용히 사라진다. 제외 휴리스틱이 가장 흔한 원인이다.
