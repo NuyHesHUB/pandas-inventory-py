@@ -82,12 +82,6 @@ def _is_return_text(s: object) -> bool:
     return ("반품" in txt) or ("return" in txt)
 
 
-def _contains_korean_text(s: object) -> bool:
-    if s is None or (isinstance(s, float) and pd.isna(s)):
-        return False
-    return bool(re.search(r"[가-힣ㄱ-ㅎㅏ-ㅣ]", str(s)))
-
-
 # ======================
 # 컬럼 선택기
 # ======================
@@ -465,7 +459,6 @@ def load_inventory_df(file_path_str: str, year: int) -> pd.DataFrame:
         pd.to_numeric(out["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
         | out["__is_krw_accounting_format__"]
     )
-    out["__is_korean_supplier__"] = out["__supplier__"].map(_contains_korean_text)
 
     out["__event_date__"] = pd.to_datetime(out["__event_date__"], errors="coerce")
     out["__in_date__"] = pd.to_datetime(out["__in_date__"], errors="coerce")
@@ -610,11 +603,6 @@ def extract_inbound_events(
         if "__is_high_krw_unit_price__" in df.columns
         else pd.to_numeric(df["__unit_price__"], errors="coerce").ge(500.0).fillna(False)
     )
-    is_korean_supplier = (
-        df["__is_korean_supplier__"]
-        if "__is_korean_supplier__" in df.columns
-        else supplier_s.map(_contains_korean_text)
-    )
 
     event_date = df["__in_date__"]
     quantity = pd.to_numeric(df["__in_qty__"], errors="coerce").fillna(0.0)
@@ -625,7 +613,6 @@ def extract_inbound_events(
         & (event_date <= cutoff)
         & (~is_return)
         & (~is_high_krw_unit_price)
-        & (~is_korean_supplier)
     )
     if not mask.any():
         return pd.DataFrame(columns=["product", "event_date", "quantity", "unit_price", "exchange_rate", "supplier", "customer", "note"])

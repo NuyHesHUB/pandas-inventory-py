@@ -84,7 +84,7 @@ class ExelReaderTest(unittest.TestCase):
                 "__in_date__": [pd.Timestamp("2025-01-07"), pd.Timestamp("2025-07-29")],
                 "__in_qty__": [480.0, 3000.0],
                 "__unit_price__": [2.28, 2.28],
-                "__exchange_rate__": [None, None],
+                "__exchange_rate__": [1370.0, 1370.0],
                 "__supplier__": ["대진화공(반품)", "Puyang Willing"],
                 "__customer__": ["", ""],
                 "__note__": ["", ""],
@@ -103,7 +103,8 @@ class ExelReaderTest(unittest.TestCase):
         self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-29")
         self.assertEqual(float(out.iloc[0]["quantity"]), 3000.0)
 
-    def test_extract_inbound_events_excludes_high_price_and_korean_supplier(self):
+    def test_extract_inbound_events_excludes_only_high_krw_unit_price(self):
+        """국내 매입 제외는 단가 ≥ 500(원화)만 본다. 공급처 상호는 판정에 쓰지 않는다."""
         df = pd.DataFrame(
             {
                 "__product__": ["AMBN", "AMBN", "AMBN"],
@@ -114,7 +115,7 @@ class ExelReaderTest(unittest.TestCase):
                 ],
                 "__in_qty__": [1000.0, 2000.0, 3000.0],
                 "__unit_price__": [10.85, 500.0, 11.1],
-                "__exchange_rate__": [1370.0, 1380.0, 1390.0],
+                "__exchange_rate__": [1370.0, 1380.0, None],
                 "__supplier__": ["Puyang Willing", "Global Corp", "한국상사"],
                 "__customer__": ["", "", ""],
                 "__note__": ["", "", ""],
@@ -129,9 +130,43 @@ class ExelReaderTest(unittest.TestCase):
             df=df,
         )
 
+        # 단가 500.0 행만 빠진다. 한글 상호("한국상사")도, 환율이 비었어도 남는다.
+        self.assertEqual(len(out), 2)
+        self.assertEqual(
+            [str(d.date()) for d in out["event_date"]],
+            ["2025-07-10", "2025-07-12"],
+        )
+
+    def test_extract_inbound_events_keeps_korean_named_importer(self):
+        """한글 상호 수입처("화동")의 입고가 통째로 빠지던 오발 회귀 테스트.
+
+        제외 판정은 단가가 원화(≥ 500)인지로만 하고, 상호의 문자 종류는 보지 않는다.
+        """
+        df = pd.DataFrame(
+            {
+                "__product__": ["GLYCERIN", "GLYCERIN"],
+                "__in_date__": [pd.Timestamp("2026-03-27"), pd.Timestamp("2026-04-02")],
+                "__in_qty__": [40000.0, 1000.0],
+                "__unit_price__": [1.25, 4300.0],
+                "__exchange_rate__": [1493.2, None],
+                "__supplier__": ["화동", "제너럴케미칼"],
+                "__customer__": ["", ""],
+                "__note__": ["", ""],
+            }
+        )
+
+        out = extract_inbound_events(
+            file_path=Path("dummy.xlsx"),
+            year=2026,
+            product="GLYCERIN",
+            cutoff=pd.Timestamp("2026-10-26"),
+            df=df,
+        )
+
         self.assertEqual(len(out), 1)
-        self.assertEqual(str(out.iloc[0]["event_date"].date()), "2025-07-10")
-        self.assertEqual(float(out.iloc[0]["unit_price"]), 10.85)
+        self.assertEqual(out.iloc[0]["supplier"], "화동")
+        self.assertEqual(float(out.iloc[0]["quantity"]), 40000.0)
+        self.assertEqual(float(out.iloc[0]["unit_price"]), 1.25)
 
     def test_krw_number_format_detection(self):
         self.assertTrue(_is_krw_number_format('_-[$₩-412]* #,##0_-'))
@@ -193,7 +228,7 @@ class ExelReaderTest(unittest.TestCase):
                 "__sales_qty__": [0.0, 100.0, 0.0],
                 "__in_qty__": [0.0, 0.0, 3000.0],
                 "__unit_price__": [None, None, 2.28],
-                "__exchange_rate__": [None, None, None],
+                "__exchange_rate__": [None, None, 1370.0],
                 "__supplier__": ["", "", "Puyang Willing"],
                 "__customer__": ["", "", ""],
                 "__note__": ["", "", ""],

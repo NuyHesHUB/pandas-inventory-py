@@ -357,8 +357,6 @@ def _has_excluded_price_inbound(
     df: pd.DataFrame,
     product: str,
     cutoff: pd.Timestamp,
-    *,
-    include_korean_supplier: bool = True,
 ) -> bool:
     """원화/국내 매입으로 제외된 입고가 있는지 확인한다."""
     if df.empty:
@@ -371,8 +369,6 @@ def _has_excluded_price_inbound(
     in_date = pd.to_datetime(in_date_source, errors="coerce")
     excluded = pd.Series(False, index=df.index)
     excluded_cols = ["__is_krw_accounting_format__", "__is_high_krw_unit_price__"]
-    if include_korean_supplier:
-        excluded_cols.append("__is_korean_supplier__")
     for col in excluded_cols:
         if col in df.columns:
             excluded = excluded | df[col].fillna(False).astype(bool)

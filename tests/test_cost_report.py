@@ -468,7 +468,6 @@ class CostReportTest(unittest.TestCase):
                 "__supplier__": ["디에이치케미칼"],
                 "__is_krw_accounting_format__": [True],
                 "__is_high_krw_unit_price__": [True],
-                "__is_korean_supplier__": [True],
             }
         )
 
