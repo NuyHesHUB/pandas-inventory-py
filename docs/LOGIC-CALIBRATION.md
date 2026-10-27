@@ -54,7 +54,7 @@
 
 | 날짜 | 원인 | 수정 | 커밋 | 회귀 테스트 |
 |---|---|---|---|---|
-| 2026-10-27 | 공급처 상호의 한글 포함 여부로 국내 매입을 판정 → 한글 상호 수입처("화동")의 입고가 통째로 제외되어 GLYCERIN 계열이 결과물에서 누락 | 상호 판정 **폐기**. 국내 매입은 단가 ≥ 500(₩)으로만 판별 | (TBD) | `test_extract_inbound_events_keeps_korean_named_importer`, `test_extract_inbound_events_excludes_only_high_krw_unit_price` |
+| 2026-10-27 | 공급처 상호의 한글 포함 여부로 국내 매입을 판정 → 한글 상호 수입처("화동")의 입고가 통째로 제외되어 GLYCERIN 계열이 결과물에서 누락 | 상호 판정 **폐기**. 국내 매입은 단가 ≥ 500(₩)으로만 판별 | aa0877f | `test_extract_inbound_events_keeps_korean_named_importer`, `test_extract_inbound_events_excludes_only_high_krw_unit_price` |
 | 2026-09-23 | pandas 불안정 정렬로 같은 날짜 lot들의 원장 순서가 깨짐 | 순서 민감 정렬 전부 `kind="stable"` | 8b0c4f8 | `test_stock_snapshot_same_day_uses_last_ledger_row` |
 | 2026-09-23 | 종료재고 스냅샷이 현재고 빈 행에서 0 반환 → 역산 범위가 판매량만큼으로 축소, 최신 lot 과배분 | 마지막 "유효" 잔고 탐색 + 現재고 파싱을 수량과 동일 규칙으로 | 8b0c4f8 | `test_stock_snapshot_skips_blank_stock_rows` |
 | 2026-09-23 | 템플릿 수량 == 판매량 우연 일치로 잘못 anchor (매달 같은 양 사가는 고정 거래처) → 지난달 lot이 그대로 남음 | 수량 일치 anchor에 수기 흔적(비표준 수식/텍스트 단가) 요구 | 8b0c4f8 | `test_template_report_recalculates_on_coincidental_qty_match` |
